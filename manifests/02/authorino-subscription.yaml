@@ -4,7 +4,8 @@ metadata:
   name: authorino-operator
   namespace: openshift-operators
 spec:
-  channel: tech-preview-v1
+  # As of late Feb 2026 we reached stable authorino-operator.v1.2.4
+  channel: stable
   installPlanApproval: Automatic
   name: authorino-operator
   source: redhat-operators
