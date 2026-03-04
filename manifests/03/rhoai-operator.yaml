@@ -21,6 +21,6 @@ metadata:
   namespace: redhat-ods-operator
 spec:
   name: rhods-operator
-  channel: stable-2.25
+  channel: stable # Do not specify a channel to get the latest version of the operator
   source: redhat-operators
   sourceNamespace: openshift-marketplace
