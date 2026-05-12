@@ -1,0 +1,35 @@
+# This manifest is used to install the JobSet Operator in the OpenShift cluster.
+# JobSet Operator is required for running the JobSet custom resources, which are used to manage and run batch jobs in the cluster.
+#
+# Please set:
+#
+# trainer:
+#  managementState: Removed
+#
+# at the rhoai-operator-dsc.yaml to remove the trainer component of RHOAI which requires the JobSet Operator.
+#
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-jobset-operator
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: openshift-jobset-operator
+  namespace: openshift-jobset-operator
+spec:
+  targetNamespaces:
+    - openshift-jobset-operator
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: job-set
+  namespace: openshift-jobset-operator
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: job-set
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
