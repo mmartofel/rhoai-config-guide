@@ -6,12 +6,17 @@ metadata:
     app.kubernetes.io/name: datasciencecluster
 spec:
   components:
+    sparkoperator:
+      managementState: Removed
     kserve:
       modelsAsService:
         managementState: Removed
       nim:
+        airGapped: false
         managementState: Managed
       rawDeploymentServiceConfig: Headless
+      wva:
+        managementState: Removed
       managementState: Managed
     modelregistry:
       registriesNamespace: rhoai-model-registries
@@ -23,6 +28,7 @@ spec:
         lmeval:
           permitCodeExecution: deny
           permitOnline: deny
+      mcpGuardrailsMode: false
       managementState: Managed
     aipipelines:
       argoWorkflowsControllers:

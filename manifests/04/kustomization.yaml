@@ -1,0 +1,7 @@
+resources:
+ - mysql-configmap.yaml
+ - mysql-secret.yaml
+ - mysql-pvc.yaml
+ - mysql-deployment.yaml
+ - mysql-service.yaml
+ - model-registry.yaml

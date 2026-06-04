@@ -1,0 +1,15 @@
+# model-registry.yaml
+apiVersion: modelregistry.opendatahub.io/v1alpha1
+kind: ModelRegistry
+metadata:
+  name: local-model-registry
+  namespace: rhoai-model-registries
+spec:
+  mysql:
+    host: mysql   # just the hostname since it's in the same namespace
+    port: 3306
+    database: registry
+    username: registry
+    passwordSecret:
+      name: mysql-credentials
+      key: MYSQL_PASSWORD
