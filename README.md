@@ -16,6 +16,10 @@ Required Operators:
 - ***OpenShift Service Mesh Operator:*** Provides Istio for managing secure communication between model-serving components.
 - ***Red Hat OpenShift Serverless Operator:*** Provides Knative Serving for scalable and event-driven AI model deployment.
 - ***Red Hat Authorino Operator:*** Provides authentication and authorization for secure access to AI model endpoints.
+- ***OpenShift cert-manager Operator:*** Manages TLS certificates required by KServe and related components.
+- ***JobSet Operator:*** Required by the RHOAI Trainer component for distributed training job management.
+- ***Red Hat Connectivity Link Operator:*** Provides API gateway, authentication, rate limiting, and policy enforcement for LLMInferenceService.
+- ***LeaderWorkerSet Operator:*** Enables wide expert parallelism for multi-node LLM inference workloads.
 - ***Red Hat OpenShift AI Operator:*** Manages and deploys AI components and services within OpenShift.
 
 Environment used for:
@@ -136,12 +140,83 @@ oc apply -f manifests/02/servicemesh-subscription.yaml
 oc apply -f manifests/02/serverless-operator.yaml
 ```
 
-### 2.2 Install the Red Hat Authorino Operator
+### 2.3 Install the Red Hat Authorino Operator
 
 ***The Red Hat Authorino Operator is required because it provides authentication for API requests, ensuring secure access to AI model endpoints.***
 
 ```bash
 oc apply -f manifests/02/authorino-subscription.yaml
+```
+
+### 2.4 Install the OpenShift cert-manager Operator
+
+***cert-manager is required by KServe and related components to manage TLS certificates automatically. Without it, LLMInferenceService cannot be used.***
+
+Apply the Namespace, OperatorGroup, and Subscription object
+
+```bash
+oc apply -f manifests/02/cert-manager-operator.yaml
+```
+
+Verify the operator is installed and running before moving on.
+
+```bash
+oc get pods -n cert-manager-operator -w
+```
+
+### 2.5 Install the JobSet Operator
+
+***The JobSet Operator is required by the RHOAI Trainer component for managing distributed training jobs. Without it, the Trainer component will fail to become ready.***
+
+Apply the Namespace, OperatorGroup, and Subscription object
+
+```bash
+oc apply -f manifests/02/jobset-operator-subscription.yaml
+```
+
+Wait for the operator to be ready, then apply the JobSetOperator instance
+
+```bash
+oc apply -f manifests/02/jobset-operator.yaml
+```
+
+### 2.6 Install the Red Hat Connectivity Link Operator
+
+***Red Hat Connectivity Link (Kuadrant) is required to enable LLMInferenceService, providing API gateway functionality, authentication, rate limiting, and traffic policy enforcement for LLM model endpoints.***
+
+Apply the Namespace, OperatorGroup, and Subscription object
+
+```bash
+oc apply -f manifests/02/connectivity-link-operator.yaml
+```
+
+Verify the operator is installed and running before moving on.
+
+```bash
+oc get pods -n kuadrant-system -w
+```
+
+Once the operator is ready, enable the Kuadrant web console plugin so it appears in the OpenShift web console:
+
+```bash
+oc patch console.operator.openshift.io cluster --type=json \
+  -p '[{"op":"add","path":"/spec/plugins/-","value":"kuadrant-console-plugin"}]'
+```
+
+### 2.7 Install the LeaderWorkerSet Operator
+
+***The LeaderWorkerSet Operator is required for wide expert parallelism with LLMInferenceService — it enables multi-node LLM inference workloads where a model is sharded across multiple GPUs on multiple nodes.***
+
+Apply the Namespace, OperatorGroup, and Subscription object
+
+```bash
+oc apply -f manifests/02/leader-worker-set-subscription.yaml
+```
+
+Wait for the operator to be ready, then apply the LeaderWorkerSetOperator instance
+
+```bash
+oc apply -f manifests/02/leader-worker-set-operator.yaml
 ```
 
 ## 3. Install the Red Hat OpenShift AI Operator

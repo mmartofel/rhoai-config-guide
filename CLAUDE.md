@@ -24,13 +24,18 @@ oc get csv -n nvidia-gpu-operator \
   jq '.[0]' > scratch/nvidia-gpu-clusterpolicy.json
 oc apply -f scratch/nvidia-gpu-clusterpolicy.json
 
-# Step 2 — KServe dependencies (Service Mesh, Serverless, Authorino, Cert-Manager, JobSet)
+# Step 2 — KServe dependencies (Service Mesh, Serverless, Authorino, Cert-Manager, JobSet, Connectivity Link, LeaderWorkerSet)
 oc apply -f manifests/02/servicemesh-subscription.yaml
 oc apply -f manifests/02/serverless-operator.yaml
 oc apply -f manifests/02/authorino-subscription.yaml
 oc apply -f manifests/02/cert-manager-operator.yaml
 oc apply -f manifests/02/jobset-operator-subscription.yaml
 oc apply -f manifests/02/jobset-operator.yaml
+oc apply -f manifests/02/connectivity-link-operator.yaml
+oc patch console.operator.openshift.io cluster --type=json \
+  -p '[{"op":"add","path":"/spec/plugins/-","value":"kuadrant-console-plugin"}]'
+oc apply -f manifests/02/leader-worker-set-subscription.yaml
+oc apply -f manifests/02/leader-worker-set-operator.yaml
 
 # Step 3 — RHOAI Operator + DataScienceCluster
 oc apply -f manifests/03/rhoai-operator.yaml
@@ -47,7 +52,7 @@ The `scratch/` directory is gitignored and used for generated/temporary cluster 
 | Directory | Purpose |
 |-----------|---------|
 | `manifests/01/` | NFD Operator, NVIDIA GPU Operator, optional GPU sample workload |
-| `manifests/02/` | KServe prerequisite operators: Service Mesh 3, Serverless, Authorino, Cert-Manager, JobSet |
+| `manifests/02/` | KServe prerequisite operators: Service Mesh 3, Serverless, Authorino, Cert-Manager, JobSet, Red Hat Connectivity Link, LeaderWorkerSet |
 | `manifests/03/` | RHOAI Operator (`rhods-operator`) and `DataScienceCluster` CRD |
 | `manifests/04/` | MySQL deployment for Model Registry backend (Kustomize, targets `rhoai-model-registries` namespace) |
 
