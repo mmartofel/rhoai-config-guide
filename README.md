@@ -294,21 +294,18 @@ oc get gateway openshift-ai-inference -n openshift-ingress
 oc apply -f manifests/06/gpu-hardware-profile.yaml
 ```
 
-## 8. Enable Gen AI Studio
+## 8. Enable Dashboard Features (Gen AI Studio + MLflow)
 
-***Gen AI Studio is the visual AI application builder in the RHOAI 3.4 dashboard. It is disabled by default and must be explicitly enabled via the `OdhDashboardConfig` resource.***
+RHOAI 3.4 has two separate resources that control what appears in the dashboard. Understanding which one to patch is non-obvious:
 
-> **Important:** This change is made in `OdhDashboardConfig`, **not** in `DataScienceCluster`. These are two separate resources with different responsibilities:
-> - `DataScienceCluster` — controls which operator components (KServe, workbenches, trainer, etc.) are deployed
-> - `OdhDashboardConfig` — controls which features and sections are visible in the RHOAI dashboard UI
->
-> After applying, verify with:
-> ```bash
-> oc get OdhDashboardConfig odh-dashboard-config \
->   -n redhat-ods-applications \
->   -o jsonpath='{.spec.dashboardConfig}'
-> ```
-> You should see `"genAiStudio":true` in the output. Checking `DataScienceCluster` will **not** show this flag.
+| Resource | Controls |
+|----------|----------|
+| `DataScienceCluster` | Which operator **components** are deployed (KServe, workbenches, trainer, …) |
+| `OdhDashboardConfig` | Which **UI features** are visible in the dashboard navigation |
+
+### 8.1 Enable Gen AI Studio
+
+***Gen AI Studio is the visual AI application builder. It is a UI toggle — the underlying operator is already present, but the dashboard hides it by default.***
 
 ```bash
 oc patch OdhDashboardConfig odh-dashboard-config \
@@ -317,7 +314,38 @@ oc patch OdhDashboardConfig odh-dashboard-config \
   --patch-file manifests/08/odh-dashboard-config-enable-aistudio.yaml
 ```
 
-After applying, hard-refresh the RHOAI dashboard (Ctrl+Shift+R / Cmd+Shift+R) — the "AI Studio" entry will appear in the left navigation. No pod restart is required.
+Verify (check `OdhDashboardConfig`, **not** `DataScienceCluster`):
+
+```bash
+oc get OdhDashboardConfig odh-dashboard-config \
+  -n redhat-ods-applications \
+  -o jsonpath='{.spec.dashboardConfig}'
+```
+
+Expected output contains `"genAiStudio":true`. Hard-refresh the dashboard — no pod restart needed.
+
+### 8.2 Enable MLflow
+
+***MLflow requires the operator component to be deployed. The `mlflow` flag in `OdhDashboardConfig` is deprecated in RHOAI 3.4 — the dashboard entry appears automatically once the operator is `Managed`.***
+
+```bash
+oc patch DataScienceCluster default-dsc \
+  --type=merge \
+  --patch-file manifests/08/rhoai-dsc-enable-mlflow.yaml
+```
+
+Verify (check `DataScienceCluster`, **not** `OdhDashboardConfig`):
+
+```bash
+oc get DataScienceCluster default-dsc \
+  -o jsonpath='{.status.conditions[?(@.type=="MLflowOperatorReady")]}'
+```
+
+Expected: `"status":"True"`. You can also watch the operator pod come up:
+
+```bash
+oc get pods -n redhat-ods-applications | grep mlflow
+```
 
 ## 9. Deploy a LLMInferenceService (llm-d)
 
