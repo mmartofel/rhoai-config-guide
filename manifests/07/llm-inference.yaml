@@ -74,6 +74,9 @@ spec:
     containers:
       - name: main
         image: vllm/vllm-openai:v0.8.4
+        envFrom:
+        - secretRef:
+            name: huggingface-token
         env:
           - name: VLLM_USE_V1
             value: "0"
