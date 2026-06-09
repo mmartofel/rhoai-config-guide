@@ -1,10 +1,9 @@
-# This manifest enables the LlamaStack Operator in the Data Science Cluster (DSC).
+# This patch manifest enables the LlamaStack Operator in the Data Science Cluster (DSC).
 # LlamaStack Operator is a component of RHOAI that provides support for running Llama models in the cluster.
-# Please ensure that the RHOAI Operator is installed and running in the cluster before applying this manifest,
-apiVersion: datasciencecluster.opendatahub.io/v2
-kind: DataScienceCluster
-metadata:
-  name: default-dsc
+# apply this patch using the following command: 
+# oc patch DataScienceCluster default-dsc \
+#   --type=merge \
+#   --patch-file manifests/05/rhoai-dsc-enable-llamastack.yaml
 spec:
   components:
     llamastackoperator:
