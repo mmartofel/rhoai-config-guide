@@ -294,17 +294,42 @@ oc get gateway openshift-ai-inference -n openshift-ingress
 oc apply -f manifests/06/gpu-hardware-profile.yaml
 ```
 
-## 8. Deploy a LLMInferenceService (llm-d)
+## 8. Enable Gen AI Studio
+
+***Gen AI Studio is the visual AI application builder in the RHOAI 3.4 dashboard. It is disabled by default and must be explicitly enabled via the `OdhDashboardConfig` resource.***
+
+> **Important:** This change is made in `OdhDashboardConfig`, **not** in `DataScienceCluster`. These are two separate resources with different responsibilities:
+> - `DataScienceCluster` — controls which operator components (KServe, workbenches, trainer, etc.) are deployed
+> - `OdhDashboardConfig` — controls which features and sections are visible in the RHOAI dashboard UI
+>
+> After applying, verify with:
+> ```bash
+> oc get OdhDashboardConfig odh-dashboard-config \
+>   -n redhat-ods-applications \
+>   -o jsonpath='{.spec.dashboardConfig}'
+> ```
+> You should see `"genAiStudio":true` in the output. Checking `DataScienceCluster` will **not** show this flag.
+
+```bash
+oc patch OdhDashboardConfig odh-dashboard-config \
+  -n redhat-ods-applications \
+  --type=merge \
+  --patch-file manifests/08/odh-dashboard-config-enable-aistudio.yaml
+```
+
+After applying, hard-refresh the RHOAI dashboard (Ctrl+Shift+R / Cmd+Shift+R) — the "AI Studio" entry will appear in the left navigation. No pod restart is required.
+
+## 9. Deploy a LLMInferenceService (llm-d)
 
 ***`LLMInferenceService` is the llm-d custom resource for serving large language models. It manages vLLM pods, an EPP scheduler, and HTTPRoute wiring automatically.***
 
-### 8.1 Create the target namespace
+### 9.1 Create the target namespace
 
 ```bash
 oc new-project my-first-model
 ```
 
-### 8.2 Create the HuggingFace token Secret
+### 9.2 Create the HuggingFace token Secret
 
 Required when using `hf://` model URIs. Without it, the `storage-initializer` init container stalls silently due to anonymous rate limits.
 
@@ -317,7 +342,7 @@ oc create secret generic huggingface-token \
 
 > **Never commit `user.env`** — it is gitignored. Use `user.env.example` as the template.
 
-### 8.3 Apply the LLMInferenceService manifest
+### 9.3 Apply the LLMInferenceService manifest
 
 Two examples are provided:
 
@@ -333,7 +358,7 @@ oc apply -f manifests/07/llm-inference.yaml
 oc apply -f manifests/07/llm-inference-qwen25-7b-instruct.yaml
 ```
 
-### 8.4 Monitor startup
+### 9.4 Monitor startup
 
 ```bash
 oc get pods -n my-first-model -w

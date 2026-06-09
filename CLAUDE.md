@@ -63,6 +63,12 @@ oc create secret generic huggingface-token \
 oc apply -f manifests/07/llm-inference.yaml                        # Qwen3-0.6B from HuggingFace
 # or
 oc apply -f manifests/07/llm-inference-qwen25-7b-instruct.yaml     # Qwen2.5-7B-Instruct from Red Hat OCI registry
+
+# Step 8 — Enable Gen AI Studio in the RHOAI dashboard
+oc patch OdhDashboardConfig odh-dashboard-config \
+  -n redhat-ods-applications \
+  --type=merge \
+  --patch-file manifests/08/odh-dashboard-config-enable-aistudio.yaml
 ```
 
 The `scratch/` directory is gitignored and used for generated/temporary cluster artifacts.
@@ -79,6 +85,7 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 | `manifests/05/` | DSC patches and llm-d Gateway: LlamaStack enablement patch + `openshift-ai-inference` GatewayClass/Gateway |
 | `manifests/06/` | GPU `HardwareProfile` for RHOAI workloads (`gpu-profile` in `redhat-ods-applications`) |
 | `manifests/07/` | `LLMInferenceService` examples: Qwen3-0.6B (HuggingFace) and Qwen2.5-7B-Instruct (Red Hat OCI) |
+| `manifests/08/` | `OdhDashboardConfig` patch to enable Gen AI Studio (`genAiStudio: true`) in the RHOAI dashboard |
 
 ## Key Configuration Details
 
@@ -91,6 +98,7 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 - **llm-d Gateway** (`manifests/05/openshift-ai-inference-gateway.yaml`): `LLMInferenceService` defaults to a Gateway named `openshift-ingress/openshift-ai-inference` which must be created manually. Uses a dedicated `openshift-ai-inference` GatewayClass (controller: `openshift.io/gateway-controller/v1`) separate from the RHOAI data-science gateway. TLS reuses the `data-science-gateway-service-tls` secret. `allowedRoutes.from: All` permits HTTPRoutes from any model namespace.
 - **GPU HardwareProfile** (`manifests/06/gpu-hardware-profile.yaml`): creates `gpu-profile` in `redhat-ods-applications`; referenced by `LLMInferenceService` via the `opendatahub.io/hardware-profile-name` annotation.
 - **HuggingFace token**: `hf://` model URIs in `LLMInferenceService` require a `huggingface-token` Secret (key: `HF_TOKEN`) in the model namespace. Without it, anonymous downloads are rate-limited and the `storage-initializer` init container stalls silently. Copy `user.env.example` → `user.env`, fill in the token, then `oc create secret generic huggingface-token -n <ns> --from-env-file=user.env`. The `user.env` file is gitignored.
+- **Gen AI Studio** (`manifests/08/odh-dashboard-config-enable-aistudio.yaml`): sets `genAiStudio: true` in the `OdhDashboardConfig` resource — **not** in `DataScienceCluster`. This is a common point of confusion: the DSC controls which operator components run; `OdhDashboardConfig` controls which UI features are visible. The flag defaults to `false` in RHOAI 3.4, so "AI Studio" never appears in the dashboard navigation until it is explicitly set. To verify the change was applied, run `oc get OdhDashboardConfig odh-dashboard-config -n redhat-ods-applications -o jsonpath='{.spec.dashboardConfig}'` — NOT `oc get DataScienceCluster`. Apply with `--type=merge`.
 
 ## Contributing
 
