@@ -242,6 +242,106 @@ After successfull login you can start working with RHOAI web interface.
 
 ![alt text](./img/2.png)
 
+## 4. Deploy MySQL Backend for Model Registry
+
+***The Model Registry provides a central store for tracking model versions, metadata, and deployment history. It requires a MySQL backend.***
+
+Apply the Kustomize configuration (creates namespace, deployment, service, and credentials Secret):
+
+```bash
+oc apply -k manifests/04/
+```
+
+## 5. Enable LlamaStack Operator
+
+***The LlamaStack Operator adds support for running Meta Llama models in the cluster via the RHOAI dashboard.***
+
+Enable the component by patching the DataScienceCluster:
+
+```bash
+oc patch DataScienceCluster default-dsc \
+  --type=merge \
+  --patch-file manifests/05/rhoai-dsc-enable-llamastack.yaml
+```
+
+Verify the operator pod is running:
+
+```bash
+oc get pods -n redhat-ods-applications | grep llama
+```
+
+## 6. Create the llm-d Inference Gateway
+
+***`LLMInferenceService` (llm-d) routes external traffic through a dedicated Gateway named `openshift-ai-inference`. This Gateway and its GatewayClass must be created before deploying any `LLMInferenceService`.***
+
+Apply the GatewayClass and Gateway:
+
+```bash
+oc apply -f manifests/05/openshift-ai-inference-gateway.yaml
+```
+
+Verify the Gateway is programmed and gets an address:
+
+```bash
+oc get gateway openshift-ai-inference -n openshift-ingress
+```
+
+## 7. Create the GPU Hardware Profile
+
+***The GPU HardwareProfile defines the resource limits and requests for GPU-accelerated workloads deployed through the RHOAI dashboard.***
+
+```bash
+oc apply -f manifests/06/gpu-hardware-profile.yaml
+```
+
+## 8. Deploy a LLMInferenceService (llm-d)
+
+***`LLMInferenceService` is the llm-d custom resource for serving large language models. It manages vLLM pods, an EPP scheduler, and HTTPRoute wiring automatically.***
+
+### 8.1 Create the target namespace
+
+```bash
+oc new-project my-first-model
+```
+
+### 8.2 Create the HuggingFace token Secret
+
+Required when using `hf://` model URIs. Without it, the `storage-initializer` init container stalls silently due to anonymous rate limits.
+
+```bash
+cp user.env.example user.env   # fill in your HF_TOKEN value
+oc create secret generic huggingface-token \
+  -n my-first-model \
+  --from-env-file=user.env
+```
+
+> **Never commit `user.env`** — it is gitignored. Use `user.env.example` as the template.
+
+### 8.3 Apply the LLMInferenceService manifest
+
+Two examples are provided:
+
+**Qwen3-0.6B from HuggingFace** (uses `hf://` URI, requires `huggingface-token` secret):
+
+```bash
+oc apply -f manifests/07/llm-inference.yaml
+```
+
+**Qwen2.5-7B-Instruct from Red Hat OCI registry** (uses `oci://` URI, no HF token needed):
+
+```bash
+oc apply -f manifests/07/llm-inference-qwen25-7b-instruct.yaml
+```
+
+### 8.4 Monitor startup
+
+```bash
+oc get pods -n my-first-model -w
+oc get llminferenceservice -n my-first-model
+```
+
+All conditions should reach `True`. The inference endpoint URL is shown in the `URL` column once `Ready` is `True`.
+
 ## 🤝 Contributing
 
 Feel free to submit issues, pull requests, or suggest new features.
