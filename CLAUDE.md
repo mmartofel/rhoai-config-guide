@@ -64,19 +64,31 @@ oc apply -f manifests/07/llm-inference.yaml                        # Qwen3-0.6B 
 # or
 oc apply -f manifests/07/llm-inference-qwen25-7b-instruct.yaml     # Qwen2.5-7B-Instruct from Red Hat OCI registry
 
-# Step 8 — Enable dashboard features (Gen AI Studio + MLflow)
-# Gen AI Studio — toggled via OdhDashboardConfig (UI flag)
+# Step 8 — Enable dashboard features
+# 8a — Gen AI Studio (UI flag in OdhDashboardConfig)
 oc patch OdhDashboardConfig odh-dashboard-config \
   -n redhat-ods-applications \
   --type=merge \
   --patch-file manifests/08/odh-dashboard-config-enable-aistudio.yaml
-# MLflow — two steps: (1) enable operator in DSC, (2) create the MLflow server instance
-# Step 1: enable the operator component (OdhDashboardConfig mlflow field is deprecated)
+# 8b — Additional UI features: Training Jobs, LLM Gateway field, MCP Catalog, Prompt Management
+oc patch OdhDashboardConfig odh-dashboard-config \
+  -n redhat-ods-applications \
+  --type=merge \
+  --patch-file manifests/08/odh-dashboard-config-enable-features.yaml
+# 8c — MLflow: (1) enable operator in DSC; (2) create server instance (operator does not auto-create it)
 oc patch DataScienceCluster default-dsc \
   --type=merge \
   --patch-file manifests/08/rhoai-dsc-enable-mlflow.yaml
-# Step 2: create the MLflow server instance (cluster-scoped CR; operator does not auto-create it)
 oc apply -f manifests/08/mlflow-instance.yaml
+# 8d — Models-as-a-Service (MaaS): requires gateway + DSC change + UI flag
+oc apply -f manifests/08/maas-gateway.yaml           # GatewayClass + maas-default-gateway (required before DSC reconcile)
+oc patch DataScienceCluster default-dsc \
+  --type=merge \
+  --patch-file manifests/08/rhoai-dsc-enable-maas.yaml
+oc patch OdhDashboardConfig odh-dashboard-config \
+  -n redhat-ods-applications \
+  --type=merge \
+  --patch-file manifests/08/odh-dashboard-config-enable-maas.yaml
 ```
 
 The `scratch/` directory is gitignored and used for generated/temporary cluster artifacts.
@@ -93,7 +105,7 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 | `manifests/05/` | DSC patches and llm-d Gateway: LlamaStack enablement patch + `openshift-ai-inference` GatewayClass/Gateway |
 | `manifests/06/` | GPU `HardwareProfile` for RHOAI workloads (`gpu-profile` in `redhat-ods-applications`) |
 | `manifests/07/` | `LLMInferenceService` examples: Qwen3-0.6B (HuggingFace) and Qwen2.5-7B-Instruct (Red Hat OCI) |
-| `manifests/08/` | Dashboard feature enablement: Gen AI Studio (`OdhDashboardConfig`), MLflow operator DSC patch, and MLflow server instance CR |
+| `manifests/08/` | Dashboard feature enablement: Gen AI Studio, additional UI flags, MLflow (operator + instance), and MaaS (gateway + DSC + UI flag) |
 
 ## Key Configuration Details
 
@@ -106,8 +118,11 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 - **llm-d Gateway** (`manifests/05/openshift-ai-inference-gateway.yaml`): `LLMInferenceService` defaults to a Gateway named `openshift-ingress/openshift-ai-inference` which must be created manually. Uses a dedicated `openshift-ai-inference` GatewayClass (controller: `openshift.io/gateway-controller/v1`) separate from the RHOAI data-science gateway. TLS reuses the `data-science-gateway-service-tls` secret. `allowedRoutes.from: All` permits HTTPRoutes from any model namespace.
 - **GPU HardwareProfile** (`manifests/06/gpu-hardware-profile.yaml`): creates `gpu-profile` in `redhat-ods-applications`; referenced by `LLMInferenceService` via the `opendatahub.io/hardware-profile-name` annotation.
 - **HuggingFace token**: `hf://` model URIs in `LLMInferenceService` require a `huggingface-token` Secret (key: `HF_TOKEN`) in the model namespace. Without it, anonymous downloads are rate-limited and the `storage-initializer` init container stalls silently. Copy `user.env.example` → `user.env`, fill in the token, then `oc create secret generic huggingface-token -n <ns> --from-env-file=user.env`. The `user.env` file is gitignored.
+- **OdhDashboardConfig opt-in flags**: RHOAI 3.4 has many boolean flags in `OdhDashboardConfig.spec.dashboardConfig` that are hidden by default. The two categories are: `disable*` flags (default `false` = feature visible; set `true` to hide) and non-`disable` flags (opt-in; must be set `true` to appear). All the features in `manifests/08/` use one or both resources. Verify all current flags with `oc get OdhDashboardConfig odh-dashboard-config -n redhat-ods-applications -o jsonpath='{.spec.dashboardConfig}'`.
 - **Gen AI Studio** (`manifests/08/odh-dashboard-config-enable-aistudio.yaml`): sets `genAiStudio: true` in the `OdhDashboardConfig` resource — **not** in `DataScienceCluster`. This is a common point of confusion: the DSC controls which operator components run; `OdhDashboardConfig` controls which UI features are visible. The flag defaults to `false` in RHOAI 3.4, so "AI Studio" never appears in the dashboard navigation until it is explicitly set. To verify: `oc get OdhDashboardConfig odh-dashboard-config -n redhat-ods-applications -o jsonpath='{.spec.dashboardConfig}'`. Apply with `--type=merge`.
+- **Additional UI flags** (`manifests/08/odh-dashboard-config-enable-features.yaml`): enables `trainingJobs`, `llmGatewayField`, `mcpCatalog`, and `promptManagement` in one patch. All are opt-in booleans in `OdhDashboardConfig`. Prerequisites already met: `trainer: Managed`, llm-d gateway deployed, `llamastackoperator: Managed`.
 - **MLflow** (`manifests/08/rhoai-dsc-enable-mlflow.yaml` + `manifests/08/mlflow-instance.yaml`): enabling MLflow requires **two separate steps**. First, set `mlflowoperator: Managed` in `DataScienceCluster` to deploy the operator (the `mlflow` flag in `OdhDashboardConfig` is deprecated — ignore it). Second, create the cluster-scoped `MLflow` CR (`mlflow-instance.yaml`) — the operator does not auto-create an instance. Without the `MLflow` CR, the dashboard shows "MLflow is currently unavailable" even though the operator pod is running. The instance uses SQLite + PVC for persistence (no S3 needed) and `workspaceLabelSelector: opendatahub.io/dashboard: "true"` to expose all RHOAI data science project namespaces. Verify: `oc get mlflow mlflow -o jsonpath='{.status}'`.
+- **Models-as-a-Service / MaaS** (`manifests/08/maas-gateway.yaml` + `manifests/08/rhoai-dsc-enable-maas.yaml` + `manifests/08/odh-dashboard-config-enable-maas.yaml`): MaaS requires **three steps**. (1) Create `maas-default-gateway` in `openshift-ingress` — the name is hardcoded; the DSC reconcile fails with "GatewayNotReady" if it doesn't exist first. (2) Set `kserve.modelsAsService: Managed` in DSC. (3) Set `modelAsService: true` in `OdhDashboardConfig`. Kuadrant (RHCL) must be installed — it is (Step 2). Verify: `oc get DataScienceCluster default-dsc -o jsonpath='{.status.conditions[?(@.type=="ModelsAsServiceReady")]}'`.
 
 ## Contributing
 

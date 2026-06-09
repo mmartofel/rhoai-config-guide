@@ -294,9 +294,9 @@ oc get gateway openshift-ai-inference -n openshift-ingress
 oc apply -f manifests/06/gpu-hardware-profile.yaml
 ```
 
-## 8. Enable Dashboard Features (Gen AI Studio + MLflow)
+## 8. Enable Dashboard Features
 
-RHOAI 3.4 has two separate resources that control what appears in the dashboard. Understanding which one to patch is non-obvious:
+RHOAI 3.4 has many UI features that are hidden by default. Understanding which resource to patch is non-obvious:
 
 | Resource | Controls |
 |----------|----------|
@@ -324,7 +324,25 @@ oc get OdhDashboardConfig odh-dashboard-config \
 
 Expected output contains `"genAiStudio":true`. Hard-refresh the dashboard — no pod restart needed.
 
-### 8.2 Enable MLflow
+### 8.2 Enable Additional UI Features
+
+***Training Jobs, LLM Gateway field, MCP Catalog, and Prompt Management are all opt-in flags in `OdhDashboardConfig`. All required backend components are already deployed.***
+
+```bash
+oc patch OdhDashboardConfig odh-dashboard-config \
+  -n redhat-ods-applications \
+  --type=merge \
+  --patch-file manifests/08/odh-dashboard-config-enable-features.yaml
+```
+
+| Flag | What appears in the dashboard |
+|------|-------------------------------|
+| `trainingJobs` | Training jobs UI under "Develop & train" (Kubeflow Trainer v2 — progress, checkpoints, distributed jobs) |
+| `llmGatewayField` | LLM Gateway configuration field in model serving UI |
+| `mcpCatalog` | MCP (Model Context Protocol) tools/servers catalog |
+| `promptManagement` | Prompt management UI for LLM prompts |
+
+### 8.4 Enable MLflow
 
 ***MLflow requires two steps: enabling the operator component in the DataScienceCluster, then creating the MLflow server instance. The `mlflow` flag in `OdhDashboardConfig` is deprecated in RHOAI 3.4 — ignore it.***
 
@@ -365,6 +383,44 @@ oc get mlflow mlflow -o jsonpath='{.status}' | python3 -m json.tool
 ```
 
 Once `"Available": true`, the "Experiments (MLflow)" section and "Launch MLflow" link in the dashboard will both work.
+
+### 8.5 Enable Models-as-a-Service (MaaS)
+
+***MaaS provides an AI inference gateway with token quotas, rate limiting, and self-service API keys. It is GA in RHOAI 3.4 and requires Kuadrant (already installed in Step 2.6) plus three explicit steps.***
+
+> **Important:** The MaaS DSC component requires a Gateway named `maas-default-gateway` in `openshift-ingress` to exist **before** the DSC reconcile runs. The name is hardcoded — the reconcile will fail with "GatewayNotReady" if the gateway is not created first.
+
+**Step 1 — create the MaaS Gateway** (GatewayClass + Gateway, same pattern as llm-d):
+
+```bash
+oc apply -f manifests/08/maas-gateway.yaml
+```
+
+**Step 2 — enable `modelsAsService` in DataScienceCluster:**
+
+```bash
+oc patch DataScienceCluster default-dsc \
+  --type=merge \
+  --patch-file manifests/08/rhoai-dsc-enable-maas.yaml
+```
+
+Verify:
+
+```bash
+oc get DataScienceCluster default-dsc \
+  -o jsonpath='{.status.conditions[?(@.type=="ModelsAsServiceReady")]}'
+```
+
+Expected: `"status":"True"`.
+
+**Step 3 — enable MaaS UI in OdhDashboardConfig:**
+
+```bash
+oc patch OdhDashboardConfig odh-dashboard-config \
+  -n redhat-ods-applications \
+  --type=merge \
+  --patch-file manifests/08/odh-dashboard-config-enable-maas.yaml
+```
 
 ## 9. Deploy a LLMInferenceService (llm-d)
 
