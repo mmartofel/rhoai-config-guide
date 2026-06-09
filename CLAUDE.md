@@ -70,10 +70,13 @@ oc patch OdhDashboardConfig odh-dashboard-config \
   -n redhat-ods-applications \
   --type=merge \
   --patch-file manifests/08/odh-dashboard-config-enable-aistudio.yaml
-# MLflow — toggled via DataScienceCluster (operator component; OdhDashboardConfig mlflow field is deprecated)
+# MLflow — two steps: (1) enable operator in DSC, (2) create the MLflow server instance
+# Step 1: enable the operator component (OdhDashboardConfig mlflow field is deprecated)
 oc patch DataScienceCluster default-dsc \
   --type=merge \
   --patch-file manifests/08/rhoai-dsc-enable-mlflow.yaml
+# Step 2: create the MLflow server instance (cluster-scoped CR; operator does not auto-create it)
+oc apply -f manifests/08/mlflow-instance.yaml
 ```
 
 The `scratch/` directory is gitignored and used for generated/temporary cluster artifacts.
@@ -90,7 +93,7 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 | `manifests/05/` | DSC patches and llm-d Gateway: LlamaStack enablement patch + `openshift-ai-inference` GatewayClass/Gateway |
 | `manifests/06/` | GPU `HardwareProfile` for RHOAI workloads (`gpu-profile` in `redhat-ods-applications`) |
 | `manifests/07/` | `LLMInferenceService` examples: Qwen3-0.6B (HuggingFace) and Qwen2.5-7B-Instruct (Red Hat OCI) |
-| `manifests/08/` | Dashboard feature patches: Gen AI Studio (`OdhDashboardConfig`) and MLflow operator (`DataScienceCluster`) |
+| `manifests/08/` | Dashboard feature enablement: Gen AI Studio (`OdhDashboardConfig`), MLflow operator DSC patch, and MLflow server instance CR |
 
 ## Key Configuration Details
 
@@ -104,7 +107,7 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 - **GPU HardwareProfile** (`manifests/06/gpu-hardware-profile.yaml`): creates `gpu-profile` in `redhat-ods-applications`; referenced by `LLMInferenceService` via the `opendatahub.io/hardware-profile-name` annotation.
 - **HuggingFace token**: `hf://` model URIs in `LLMInferenceService` require a `huggingface-token` Secret (key: `HF_TOKEN`) in the model namespace. Without it, anonymous downloads are rate-limited and the `storage-initializer` init container stalls silently. Copy `user.env.example` → `user.env`, fill in the token, then `oc create secret generic huggingface-token -n <ns> --from-env-file=user.env`. The `user.env` file is gitignored.
 - **Gen AI Studio** (`manifests/08/odh-dashboard-config-enable-aistudio.yaml`): sets `genAiStudio: true` in the `OdhDashboardConfig` resource — **not** in `DataScienceCluster`. This is a common point of confusion: the DSC controls which operator components run; `OdhDashboardConfig` controls which UI features are visible. The flag defaults to `false` in RHOAI 3.4, so "AI Studio" never appears in the dashboard navigation until it is explicitly set. To verify: `oc get OdhDashboardConfig odh-dashboard-config -n redhat-ods-applications -o jsonpath='{.spec.dashboardConfig}'`. Apply with `--type=merge`.
-- **MLflow** (`manifests/08/rhoai-dsc-enable-mlflow.yaml`): sets `mlflowoperator: Managed` in `DataScienceCluster` — **not** in `OdhDashboardConfig`. The `mlflow` field in `OdhDashboardConfig` is explicitly deprecated in RHOAI 3.4 ("MLflow is now always enabled when the operator component is present"). The dashboard entry appears automatically once the operator is `Managed`. To verify: `oc get DataScienceCluster default-dsc -o jsonpath='{.status.conditions[?(@.type=="MLflowOperatorReady")]}'` should show `"status":"True"`.
+- **MLflow** (`manifests/08/rhoai-dsc-enable-mlflow.yaml` + `manifests/08/mlflow-instance.yaml`): enabling MLflow requires **two separate steps**. First, set `mlflowoperator: Managed` in `DataScienceCluster` to deploy the operator (the `mlflow` flag in `OdhDashboardConfig` is deprecated — ignore it). Second, create the cluster-scoped `MLflow` CR (`mlflow-instance.yaml`) — the operator does not auto-create an instance. Without the `MLflow` CR, the dashboard shows "MLflow is currently unavailable" even though the operator pod is running. The instance uses SQLite + PVC for persistence (no S3 needed) and `workspaceLabelSelector: opendatahub.io/dashboard: "true"` to expose all RHOAI data science project namespaces. Verify: `oc get mlflow mlflow -o jsonpath='{.status}'`.
 
 ## Contributing
 

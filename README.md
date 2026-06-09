@@ -326,7 +326,11 @@ Expected output contains `"genAiStudio":true`. Hard-refresh the dashboard — no
 
 ### 8.2 Enable MLflow
 
-***MLflow requires the operator component to be deployed. The `mlflow` flag in `OdhDashboardConfig` is deprecated in RHOAI 3.4 — the dashboard entry appears automatically once the operator is `Managed`.***
+***MLflow requires two steps: enabling the operator component in the DataScienceCluster, then creating the MLflow server instance. The `mlflow` flag in `OdhDashboardConfig` is deprecated in RHOAI 3.4 — ignore it.***
+
+> **Important:** Enabling the operator alone is not enough. The MLflow operator does not auto-create a server instance. Without the `MLflow` CR, the dashboard shows "MLflow is currently unavailable" even though the operator pod is running.
+
+**Step 1 — enable the operator component** (patches `DataScienceCluster`):
 
 ```bash
 oc patch DataScienceCluster default-dsc \
@@ -334,18 +338,33 @@ oc patch DataScienceCluster default-dsc \
   --patch-file manifests/08/rhoai-dsc-enable-mlflow.yaml
 ```
 
-Verify (check `DataScienceCluster`, **not** `OdhDashboardConfig`):
+Verify the operator is ready:
 
 ```bash
 oc get DataScienceCluster default-dsc \
   -o jsonpath='{.status.conditions[?(@.type=="MLflowOperatorReady")]}'
 ```
 
-Expected: `"status":"True"`. You can also watch the operator pod come up:
+Expected: `"status":"True"`.
+
+**Step 2 — create the MLflow server instance** (cluster-scoped `MLflow` CR):
 
 ```bash
-oc get pods -n redhat-ods-applications | grep mlflow
+oc apply -f manifests/08/mlflow-instance.yaml
 ```
+
+This deploys an MLflow server with:
+- SQLite backend + 10 Gi PVC (no S3 bucket required)
+- Artifact serving built into the MLflow server
+- All RHOAI data science project namespaces exposed as workspaces (selected by the `opendatahub.io/dashboard: "true"` label)
+
+Verify the instance is ready and note the URL:
+
+```bash
+oc get mlflow mlflow -o jsonpath='{.status}' | python3 -m json.tool
+```
+
+Once `"Available": true`, the "Experiments (MLflow)" section and "Launch MLflow" link in the dashboard will both work.
 
 ## 9. Deploy a LLMInferenceService (llm-d)
 
