@@ -5,9 +5,9 @@ metadata:
   namespace: redhat-ods-applications
 type: Opaque
 stringData:
-  POSTGRES_DB: maasdb
-  POSTGRES_USER: maas
-  POSTGRES_PASSWORD: maasdb123
+  POSTGRESQL_DATABASE: maasdb
+  POSTGRESQL_USER: maas
+  POSTGRESQL_PASSWORD: maasdb123
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
