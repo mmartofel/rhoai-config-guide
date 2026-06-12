@@ -524,15 +524,30 @@ Expected: `"status":"True"`. Once ready, the overall DSC returns to `Ready` phas
 
 ***`LLMInferenceService` is the llm-d custom resource for serving large language models. It manages vLLM pods, an EPP scheduler, and HTTPRoute wiring automatically.***
 
+Two deployment patterns are provided. They differ in namespace, model source, and gateway:
+
+| | Qwen3-0.6B (HuggingFace) | Qwen2.5-7B-Instruct (Red Hat OCI, MaaS) |
+|---|---|---|
+| Namespace | `my-first-model` (inline in manifest) | `dybbol` (`dybbol-project.yaml`) |
+| Model source | `hf://` — HuggingFace token required | `oci://` — cluster pull secret sufficient |
+| Gateway | `openshift-ai-inference` (default) | `maas-default-gateway` (explicit) |
+| MaaS-ready | No | Yes — proceed to Section 10 |
+
 ### 9.1 Create the target namespace
 
+**Qwen3-0.6B (HuggingFace)** — the `my-first-model` namespace is embedded in `llm-inference.yaml` and created automatically on apply. No separate step needed.
+
+**Qwen2.5-7B-Instruct (Red Hat OCI / MaaS)** — apply the `dybbol` project manifest. This creates the namespace with the label that makes it visible as a Data Science Project in the RHOAI dashboard:
+
 ```bash
-oc new-project my-first-model
+oc apply -f manifests/07/dybbol-project.yaml
 ```
+
+> **Why `opendatahub.io/dashboard: "true"`?** Without this label, the namespace exists but is invisible in the RHOAI dashboard. `modelmesh-enabled: "false"` ensures KServe/llm-d is used instead of ModelMesh.
 
 ### 9.2 Create the HuggingFace token Secret
 
-Required when using `hf://` model URIs. Without it, the `storage-initializer` init container stalls silently due to anonymous rate limits.
+Required **only** when using the HuggingFace (`hf://`) example. Without it, the `storage-initializer` init container stalls silently due to anonymous rate limits.
 
 ```bash
 cp user.env.example user.env   # fill in your HF_TOKEN value
@@ -545,28 +560,74 @@ oc create secret generic huggingface-token \
 
 ### 9.3 Apply the LLMInferenceService manifest
 
-Two examples are provided:
-
-**Qwen3-0.6B from HuggingFace** (uses `hf://` URI, requires `huggingface-token` secret):
+**Qwen3-0.6B from HuggingFace** (namespace: `my-first-model`, gateway: `openshift-ai-inference`):
 
 ```bash
 oc apply -f manifests/07/llm-inference.yaml
 ```
 
-**Qwen2.5-7B-Instruct from Red Hat OCI registry** (uses `oci://` URI, no HF token needed):
+**Qwen2.5-7B-Instruct from Red Hat OCI registry** (namespace: `dybbol`, gateway: `maas-default-gateway`):
 
 ```bash
 oc apply -f manifests/07/llm-inference-qwen25-7b-instruct.yaml
 ```
 
+> **Gateway note:** The OCI manifest explicitly sets `spec.router.gateway.refs` to `maas-default-gateway`. The default (`gateway: {}`) wires the HTTPRoute to `openshift-ai-inference` instead, which causes `MaaSModelRef` to fail with "does not reference gateway". The HuggingFace example uses the default gateway and is not MaaS-enabled.
+
+> **`opendatahub.io/connections` portability:** Never copy the `opendatahub.io/connections: <secret-name>` annotation from dashboard-exported YAMLs into committed manifests. The RHOAI mutating webhook (`connection-llmisvc.opendatahub.io`, `failurePolicy: Fail`) validates that the referenced secret exists in the target namespace and hard-blocks the apply if it doesn't. Dashboard-generated names (e.g. `secret-6a153e`) are namespace-specific auto-generated values. Omit the annotation for images covered by the cluster pull secret (`registry.redhat.io`, `quay.io`).
+
 ### 9.4 Monitor startup
 
 ```bash
+# HuggingFace example
 oc get pods -n my-first-model -w
 oc get llminferenceservice -n my-first-model
+
+# OCI / MaaS example
+oc get pods -n dybbol -w
+oc get llminferenceservice -n dybbol
 ```
 
-All conditions should reach `True`. The inference endpoint URL is shown in the `URL` column once `Ready` is `True`.
+All conditions should reach `True`. The inference endpoint URL appears in the `URL` column once `READY` is `True`.
+
+## 10. Register Model with MaaS (MaaSModelRef)
+
+***`MaaSModelRef` is the bridge between a running `LLMInferenceService` and the MaaS control plane. Without it, the Subscriptions and Authorization Policies forms show "No models available" and API keys cannot be issued.***
+
+> **Prerequisite:** `ModelsAsServiceReady: True` (Step 8.5) and the `LLMInferenceService` must be Ready (Step 9). The `LLMInferenceService` must use `maas-default-gateway` (not the default `openshift-ai-inference`) — see the gateway note in Section 9.3.
+
+### 10.1 Apply the MaaSModelRef
+
+```bash
+oc apply -f manifests/09/maas-model-ref.yaml
+```
+
+Verify the MaaSModelRef reaches `Ready` phase (allow ~30 seconds):
+
+```bash
+oc get maasmodelref qwen25-7b-instruct -n dybbol \
+  -o jsonpath='{.status.phase}{"\n"}{range .status.conditions[*]}{.type}{": "}{.status}{" — "}{.message}{"\n"}{end}'
+# Expected: Ready / Ready: True — Successfully reconciled
+```
+
+### 10.2 Complete the admin flow in the dashboard
+
+Once the `MaaSModelRef` is Ready, the model appears in the MaaS admin forms:
+
+1. **Settings → Subscriptions → Create subscription** — assign the model to one or more user groups and set a priority
+2. **Settings → Authorization policies → Create authorization policy** — select the model and the groups permitted to call it
+3. **Gen AI Studio → API keys → Create API key** — select the subscription, set expiration (1–365 days), copy the generated token
+
+### 10.3 Test the MaaS endpoint
+
+```bash
+APPS_DOMAIN=$(oc get ingresses.config cluster -o jsonpath='{.spec.domain}')
+curl -s \
+  -H "Authorization: Bearer <api-key>" \
+  https://maas.${APPS_DOMAIN}/v1/models | python3 -m json.tool
+```
+
+Expected: a JSON list containing `RedHatAI/Qwen2.5-7B-Instruct`. Once working, use the same `maas.${APPS_DOMAIN}/v1/chat/completions` endpoint for inference calls.
 
 ## 🤝 Contributing
 

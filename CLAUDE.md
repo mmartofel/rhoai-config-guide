@@ -55,10 +55,13 @@ oc apply -f manifests/05/openshift-ai-inference-gateway.yaml
 oc apply -f manifests/06/gpu-hardware-profile.yaml
 
 # Step 7 — Deploy a LLMInferenceService (llm-d)
-# Create the HuggingFace token secret first (required for hf:// model URIs)
+# 7a — Create the dybbol project (makes it visible in RHOAI dashboard as a Data Science Project)
+oc apply -f manifests/07/dybbol-project.yaml
+
+# 7b — Create the HuggingFace token secret (required for hf:// model URIs only)
 cp user.env.example user.env        # fill in your HF_TOKEN
 oc create secret generic huggingface-token \
-  -n <your-namespace> \
+  -n dybbol \
   --from-env-file=user.env
 # Apply the inference service manifest
 oc apply -f manifests/07/llm-inference.yaml                        # Qwen3-0.6B from HuggingFace
@@ -134,6 +137,22 @@ EOF
 # Verify DNS is published to Route53 (status.zones[*].conditions[*].type=Published)
 oc get dnsrecord maas-api-dns -n openshift-ingress-operator \
   -o jsonpath='{.status.zones[0].conditions[0]}'
+
+# 9e — Register the deployed model with MaaS by creating a MaaSModelRef
+# MaaSModelRef is the bridge between LLMInferenceService and the MaaS control plane.
+# Without it, Subscriptions and Authorization Policies cannot reference any model.
+oc apply -f manifests/09/maas-model-ref.yaml
+oc get maasmodelref qwen25-7b-instruct -n dybbol \
+  -o jsonpath='{.status.phase}'   # expect: Ready
+
+# After MaaSModelRef is Ready, complete the admin flow in the dashboard:
+#   Settings → Subscriptions → Create subscription (assign model to user groups)
+#   Settings → Authorization policies → Create authorization policy (enforce access)
+#   Gen AI Studio → API keys → Create API key (user generates a Bearer token)
+# Test the MaaS endpoint with the issued key:
+APPS_DOMAIN=$(oc get ingresses.config cluster -o jsonpath='{.spec.domain}')
+curl -H "Authorization: Bearer <api-key>" \
+  https://maas.${APPS_DOMAIN}/v1/models
 ```
 
 The `scratch/` directory is gitignored and used for generated/temporary cluster artifacts.
@@ -149,9 +168,9 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 | `manifests/04/` | MySQL deployment for Model Registry backend (Kustomize, targets `rhoai-model-registries` namespace) |
 | `manifests/05/` | DSC patches and llm-d Gateway: LlamaStack enablement patch + `openshift-ai-inference` GatewayClass/Gateway |
 | `manifests/06/` | GPU `HardwareProfile` for RHOAI workloads (`gpu-profile` in `redhat-ods-applications`) |
-| `manifests/07/` | `LLMInferenceService` examples: Qwen3-0.6B (HuggingFace) and Qwen2.5-7B-Instruct (Red Hat OCI) |
+| `manifests/07/` | `dybbol` project namespace + `LLMInferenceService` examples: Qwen3-0.6B (HuggingFace) and Qwen2.5-7B-Instruct (Red Hat OCI) |
 | `manifests/08/` | Dashboard feature enablement: Gen AI Studio, additional UI flags, MLflow (operator + instance), and MaaS (gateway + DSC + UI flag) |
-| `manifests/09/` | MaaS infrastructure prerequisites: PostgreSQL deployment + credentials, `maas-db-config` Secret, Authorino instance, optional User Workload Monitoring, DNS record template for maas gateway |
+| `manifests/09/` | MaaS infrastructure prerequisites: PostgreSQL deployment + credentials, `maas-db-config` Secret, Authorino instance, optional User Workload Monitoring, DNS record template for maas gateway, `MaaSModelRef` to register the deployed model |
 
 ## Key Configuration Details
 
@@ -174,7 +193,18 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 - **Authorino instance for MaaS** (`manifests/09/authorino-instance.yaml`): The Authorino Operator (installed in Step 2.3) requires an `Authorino` CR (`operator.authorino.kuadrant.io/v1beta1`) deployed in `redhat-ods-applications`. `clusterWide: true` lets it watch `AuthConfig` CRs across all model namespaces. TLS is disabled on the listener — plain HTTP is sufficient for in-cluster MaaS communication.
 - **PostgreSQL image for MaaS**: `registry.redhat.io/rhel9/postgresql-15` — data path is `/var/lib/pgsql/data` (Red Hat convention). Credentials come from the `maas-postgresql-credentials` Secret; the `maas-db-config` Secret must reference the same password value.
 - **Kuadrant CR** (`manifests/02/kuadrant-instance.yaml`): The RHCL (Kuadrant) operator alone is not enough — a `Kuadrant` CR must be created in `kuadrant-system` to activate the operator and wire up its components (Authorino, Limitador, DNS Operator). Without the CR, `AuthPolicy` resources are accepted but never enforced (`"kuadrant is not installed, please create resource"`), meaning Kuadrant's Authorino is never started and no `AuthConfig` resources are generated. Apply immediately after the RHCL operator is ready. Verify: `oc get kuadrant kuadrant -n kuadrant-system -o jsonpath='{.status.conditions[0].message}'` → `"Kuadrant is ready"`.
+- **`opendatahub.io/connections` annotation portability**: The RHOAI dashboard injects an `opendatahub.io/connections: <secret-name>` annotation when you create a `LLMInferenceService` or `InferenceService` through the UI. The mutating webhook `connection-llmisvc.opendatahub.io` (failurePolicy: Fail) validates that the named secret exists in the target namespace on every CREATE/UPDATE — if it doesn't, the apply is denied. Dashboard-generated secret names (e.g. `secret-6a153e`) are auto-generated and namespace-specific; never commit them to manifests. Remove the annotation for images pulled via the cluster pull secret (`registry.redhat.io`, `quay.io`, etc.). Only include it when you have pre-created a named data connection secret in the target namespace and want the dashboard to display the connection.
+- **`dybbol` project namespace** (`manifests/07/dybbol-project.yaml`): The model deployment namespace must carry the label `opendatahub.io/dashboard: "true"` to appear as a Data Science Project in the RHOAI dashboard. Without this label the namespace exists but is invisible to the dashboard. The label `modelmesh-enabled: "false"` tells RHOAI to use KServe/llm-d rather than ModelMesh for serving. Apply with `oc apply -f manifests/07/dybbol-project.yaml` before deploying the `LLMInferenceService` — the namespace must exist first.
+- **`MaaSModelRef`** (`manifests/09/maas-model-ref.yaml`): After the MaaS control plane is ready (`ModelsAsServiceReady: True`) and a `LLMInferenceService` is running, a `MaaSModelRef` CR must be created in the **same namespace** as the inference service to register it with MaaS. Without this CR, the Subscriptions and Authorization Policies forms in the dashboard show "No models available" and API keys cannot be issued. The spec uses `spec.modelRef.kind: LLMInferenceService` and `spec.modelRef.name: <service-name>`. Verify: `oc get maasmodelref -n dybbol -o jsonpath='{.items[0].status.phase}'` → `Ready`. Once Ready, the model appears in the Subscriptions dropdown and the full admin flow (Subscription → Authorization Policy → API key → curl) becomes available.
+- **MaaS requires `maas-default-gateway` in `LLMInferenceService`**: A `LLMInferenceService` intended for MaaS must explicitly set `spec.router.gateway.refs` to `maas-default-gateway` in `openshift-ingress`. The default (`gateway: {}`) wires the HTTPRoute to `openshift-ai-inference` (the llm-d gateway from Step 5). The `MaaSModelRef` controller validates the HTTPRoute's `parentRefs` and sets phase `Failed` with "does not reference gateway (expected: openshift-ingress/maas-default-gateway)" if the default is left in place. See `manifests/07/llm-inference-qwen25-7b-instruct.yaml` for the correct `router.gateway.refs` pattern.
 - **MaaS DNS routing** (`manifests/09/maas-dns-record.yaml`): The `maas-ui` sidecar inside the dashboard auto-discovers the MaaS API URL as `maas.<apps-domain>` (derived from `GATEWAY_DOMAIN` env var). On clusters where `*.apps` is a wildcard CNAME to the OpenShift Router, this URL resolves to the Router — not the `maas-default-gateway` ELB. The Router has no backend for this host and returns 503, causing the dashboard API keys panel to fail. Fix: create a specific `DNSRecord` (ingress.operator.openshift.io/v1) for `maas.<apps-domain>` as a CNAME to the `maas-default-gateway` ELB. This record overrides the wildcard in Route53 and is managed by the same ingress operator that manages the `*.apps` wildcard. The manifest in `manifests/09/maas-dns-record.yaml` is a template with `<APPS_DOMAIN>` and `<MAAS_ELB>` placeholders — use the dynamic command in Step 9d instead of applying the template directly.
+
+## Pending Work
+
+- [ ] **Test MaaS end-to-end** — create a Subscription and Authorization Policy via the dashboard, generate an API key, confirm `curl https://maas.<apps-domain>/v1/chat/completions` returns a valid response. Document any additional errors encountered.
+- [ ] **Declarative Subscription / Authorization Policy manifests** — the admin flow (Subscription → AuthPolicy) is currently dashboard-only. Investigate whether `MaaSSubscription` and `MaaSAuthorizationPolicy` CRDs exist (`oc get crd | grep maas`) and, if so, add manifests to `manifests/09/` so the full MaaS setup is reproducible without the UI.
+- [ ] **`llm-inference.yaml` (HuggingFace / Qwen3-0.6B) namespace alignment** — this manifest still creates `my-first-model` inline. Decide whether it should also target `dybbol` (for consistency) or stay as a standalone quick-start example with its own namespace.
+- [ ] **HuggingFace example MaaS-readiness** — if the HuggingFace model should also be served via MaaS, update `llm-inference.yaml` to use `maas-default-gateway` and create a second `MaaSModelRef` for it.
 
 ## Contributing
 

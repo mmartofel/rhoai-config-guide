@@ -4,8 +4,6 @@ metadata:
   name: redhataiqwen25-7b-instruct
   namespace: dybbol
   annotations:
-    opendatahub.io/connections: secret-6a153e
-    opendatahub.io/genai-use-case: coi
     opendatahub.io/hardware-profile-name: gpu-profile
     opendatahub.io/hardware-profile-namespace: redhat-ods-applications
     opendatahub.io/model-type: generative
@@ -21,7 +19,10 @@ spec:
     uri: oci://registry.redhat.io/rhelai1/modelcar-qwen2-5-7b-instruct:1.5
   replicas: 2
   router:
-    gateway: {}
+    gateway:
+      refs:
+        - name: maas-default-gateway
+          namespace: openshift-ingress
     route: {}
     scheduler: {}
   template:
