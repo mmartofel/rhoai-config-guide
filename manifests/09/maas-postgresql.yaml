@@ -7,8 +7,7 @@ type: Opaque
 stringData:
   POSTGRES_DB: maasdb
   POSTGRES_USER: maas
-  # Change this password — must match the password in maas-db-config.yaml
-  POSTGRES_PASSWORD: changeme
+  POSTGRES_PASSWORD: maasdb123
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

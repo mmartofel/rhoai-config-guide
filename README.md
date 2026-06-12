@@ -425,8 +425,6 @@ oc patch OdhDashboardConfig odh-dashboard-config \
 
 MaaS requires a PostgreSQL database to store API key lifecycle data. The manifests in `manifests/09/` deploy a PostgreSQL instance inside `redhat-ods-applications`.
 
-> **Before applying:** edit `manifests/09/maas-postgresql.yaml` and change `POSTGRES_PASSWORD: changeme` to a real password. Then update the password in `manifests/09/maas-db-config.yaml` to match (`DB_CONNECTION_URL` value).
-
 ```bash
 oc apply -f manifests/09/maas-postgresql.yaml
 oc get pods -n redhat-ods-applications -l app=maas-postgresql -w   # wait until Running
