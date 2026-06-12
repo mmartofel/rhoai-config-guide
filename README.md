@@ -461,6 +461,40 @@ User Workload Monitoring enables MaaS token usage metrics per model. It is optio
 oc apply -f manifests/09/cluster-monitoring-config.yaml
 ```
 
+#### 8.5.8 Create the MaaS DNS Record
+
+The RHOAI dashboard's MaaS UI sidecar constructs the MaaS API URL as `maas.<apps-domain>`. On most OpenShift clusters the wildcard `*.apps.<domain>` DNS entry points to the OpenShift Router, not to the `maas-default-gateway` LoadBalancer. Without a specific DNS override the Router returns 503 and the API keys panel shows "Error loading components".
+
+Fix: create a dedicated CNAME record that points `maas.<apps-domain>` directly at the `maas-default-gateway` ELB. The OpenShift Ingress Operator's `DNSRecord` CRD manages Route53 entries — the same mechanism used for the `*.apps` wildcard.
+
+```bash
+MAAS_ELB=$(oc get svc maas-default-gateway-maas-gateway-class -n openshift-ingress \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+APPS_DOMAIN=$(oc get ingresses.config cluster -o jsonpath='{.spec.domain}')
+cat <<EOF | oc apply -f -
+apiVersion: ingress.operator.openshift.io/v1
+kind: DNSRecord
+metadata:
+  name: maas-api-dns
+  namespace: openshift-ingress-operator
+spec:
+  dnsManagementPolicy: Managed
+  dnsName: "maas.${APPS_DOMAIN}."
+  recordTTL: 30
+  recordType: CNAME
+  targets:
+    - ${MAAS_ELB}
+EOF
+```
+
+Verify the record is published to Route53:
+
+```bash
+oc get dnsrecord maas-api-dns -n openshift-ingress-operator \
+  -o jsonpath='{.status.zones[0].conditions[0].message}'
+# Expected: "The DNS provider succeeded in ensuring the record"
+```
+
 #### Verify MaaS is Ready
 
 After all prerequisites exist, the MaaS reconciler may take 2–3 minutes to re-evaluate:
@@ -470,7 +504,7 @@ oc get DataScienceCluster default-dsc \
   -o jsonpath='{.status.conditions[?(@.type=="ModelsAsServiceReady")]}'
 ```
 
-Expected: `"status":"True"`. Once ready, the overall DSC returns to `Ready` phase and the "Models as a Service" section appears in the RHOAI dashboard.
+Expected: `"status":"True"`. Once ready, the overall DSC returns to `Ready` phase. The **"API keys"** panel under Gen AI Studio in the RHOAI dashboard will load without errors.
 
 ## 9. Deploy a LLMInferenceService (llm-d)
 

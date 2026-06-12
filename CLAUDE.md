@@ -109,6 +109,30 @@ oc apply -f manifests/09/cluster-monitoring-config.yaml
 # Verify ModelsAsService is Ready (allow 2-3 min after all prerequisites exist)
 oc get DataScienceCluster default-dsc \
   -o jsonpath='{.status.conditions[?(@.type=="ModelsAsServiceReady")]}'
+
+# 9d — Create DNS record so maas.<apps-domain> routes to the maas-default-gateway ELB
+# The wildcard *.apps DNS points to the OpenShift Router, not the maas-default-gateway ELB.
+# Without this record the dashboard API keys panel returns 503 (wrong backend).
+MAAS_ELB=$(oc get svc maas-default-gateway-maas-gateway-class -n openshift-ingress \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+APPS_DOMAIN=$(oc get ingresses.config cluster -o jsonpath='{.spec.domain}')
+cat <<EOF | oc apply -f -
+apiVersion: ingress.operator.openshift.io/v1
+kind: DNSRecord
+metadata:
+  name: maas-api-dns
+  namespace: openshift-ingress-operator
+spec:
+  dnsManagementPolicy: Managed
+  dnsName: "maas.${APPS_DOMAIN}."
+  recordTTL: 30
+  recordType: CNAME
+  targets:
+    - ${MAAS_ELB}
+EOF
+# Verify DNS is published to Route53 (status.zones[*].conditions[*].type=Published)
+oc get dnsrecord maas-api-dns -n openshift-ingress-operator \
+  -o jsonpath='{.status.zones[0].conditions[0]}'
 ```
 
 The `scratch/` directory is gitignored and used for generated/temporary cluster artifacts.
@@ -126,7 +150,7 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 | `manifests/06/` | GPU `HardwareProfile` for RHOAI workloads (`gpu-profile` in `redhat-ods-applications`) |
 | `manifests/07/` | `LLMInferenceService` examples: Qwen3-0.6B (HuggingFace) and Qwen2.5-7B-Instruct (Red Hat OCI) |
 | `manifests/08/` | Dashboard feature enablement: Gen AI Studio, additional UI flags, MLflow (operator + instance), and MaaS (gateway + DSC + UI flag) |
-| `manifests/09/` | MaaS infrastructure prerequisites: PostgreSQL deployment + credentials, `maas-db-config` Secret, Authorino instance, optional User Workload Monitoring |
+| `manifests/09/` | MaaS infrastructure prerequisites: PostgreSQL deployment + credentials, `maas-db-config` Secret, Authorino instance, optional User Workload Monitoring, DNS record template for maas gateway |
 
 ## Key Configuration Details
 
@@ -148,6 +172,7 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 - **`maas-db-config` Secret** (`manifests/09/maas-db-config.yaml`): key `DB_CONNECTION_URL`, value format `postgresql://user:pass@host:5432/db?sslmode=disable`. The companion PostgreSQL deployment (`maas-postgresql.yaml`) runs in `redhat-ods-applications` and is reachable in-cluster at `maas-postgresql.redhat-ods-applications.svc.cluster.local:5432`.
 - **Authorino instance for MaaS** (`manifests/09/authorino-instance.yaml`): The Authorino Operator (installed in Step 2.3) requires an `Authorino` CR (`operator.authorino.kuadrant.io/v1beta1`) deployed in `redhat-ods-applications`. `clusterWide: true` lets it watch `AuthConfig` CRs across all model namespaces. TLS is disabled on the listener — plain HTTP is sufficient for in-cluster MaaS communication.
 - **PostgreSQL image for MaaS**: `registry.redhat.io/rhel9/postgresql-15` — data path is `/var/lib/pgsql/data` (Red Hat convention). Credentials come from the `maas-postgresql-credentials` Secret; the `maas-db-config` Secret must reference the same password value.
+- **MaaS DNS routing** (`manifests/09/maas-dns-record.yaml`): The `maas-ui` sidecar inside the dashboard auto-discovers the MaaS API URL as `maas.<apps-domain>` (derived from `GATEWAY_DOMAIN` env var). On clusters where `*.apps` is a wildcard CNAME to the OpenShift Router, this URL resolves to the Router — not the `maas-default-gateway` ELB. The Router has no backend for this host and returns 503, causing the dashboard API keys panel to fail. Fix: create a specific `DNSRecord` (ingress.operator.openshift.io/v1) for `maas.<apps-domain>` as a CNAME to the `maas-default-gateway` ELB. This record overrides the wildcard in Route53 and is managed by the same ingress operator that manages the `*.apps` wildcard. The manifest in `manifests/09/maas-dns-record.yaml` is a template with `<APPS_DOMAIN>` and `<MAAS_ELB>` placeholders — use the dynamic command in Step 9d instead of applying the template directly.
 
 ## Contributing
 
