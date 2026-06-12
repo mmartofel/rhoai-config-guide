@@ -89,6 +89,28 @@ oc patch OdhDashboardConfig odh-dashboard-config \
   -n redhat-ods-applications \
   --type=merge \
   --patch-file manifests/08/odh-dashboard-config-enable-maas.yaml
+
+# Step 9 — MaaS infrastructure prerequisites: PostgreSQL + Authorino + optional User Workload Monitoring
+# Note: Steps 8d gateway/DSC/UI must be applied before or after Step 9 — both must be complete for
+# ModelsAsServiceReady to become True. The order between 8d and 9 does not matter.
+
+# 9a — Deploy PostgreSQL and create the maas-db-config Secret
+# Edit maas-postgresql.yaml: change POSTGRES_PASSWORD from "changeme" to a real password
+# Edit maas-db-config.yaml: update the password in DB_CONNECTION_URL to match
+oc apply -f manifests/09/maas-postgresql.yaml
+oc get pods -n redhat-ods-applications -l app=maas-postgresql -w   # wait until Running
+oc apply -f manifests/09/maas-db-config.yaml
+
+# 9b — Deploy Authorino instance in redhat-ods-applications
+oc apply -f manifests/09/authorino-instance.yaml
+oc get pods -n redhat-ods-applications -l app.kubernetes.io/name=authorino -w
+
+# 9c — (Optional) Enable User Workload Monitoring
+oc apply -f manifests/09/cluster-monitoring-config.yaml
+
+# Verify ModelsAsService is Ready (allow 2-3 min after all prerequisites exist)
+oc get DataScienceCluster default-dsc \
+  -o jsonpath='{.status.conditions[?(@.type=="ModelsAsServiceReady")]}'
 ```
 
 The `scratch/` directory is gitignored and used for generated/temporary cluster artifacts.
@@ -106,6 +128,7 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 | `manifests/06/` | GPU `HardwareProfile` for RHOAI workloads (`gpu-profile` in `redhat-ods-applications`) |
 | `manifests/07/` | `LLMInferenceService` examples: Qwen3-0.6B (HuggingFace) and Qwen2.5-7B-Instruct (Red Hat OCI) |
 | `manifests/08/` | Dashboard feature enablement: Gen AI Studio, additional UI flags, MLflow (operator + instance), and MaaS (gateway + DSC + UI flag) |
+| `manifests/09/` | MaaS infrastructure prerequisites: PostgreSQL deployment + credentials, `maas-db-config` Secret, Authorino instance, optional User Workload Monitoring |
 
 ## Key Configuration Details
 
@@ -123,6 +146,10 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 - **Additional UI flags** (`manifests/08/odh-dashboard-config-enable-features.yaml`): enables `trainingJobs`, `llmGatewayField`, `mcpCatalog`, and `promptManagement` in one patch. All are opt-in booleans in `OdhDashboardConfig`. Prerequisites already met: `trainer: Managed`, llm-d gateway deployed, `llamastackoperator: Managed`.
 - **MLflow** (`manifests/08/rhoai-dsc-enable-mlflow.yaml` + `manifests/08/mlflow-instance.yaml`): enabling MLflow requires **two separate steps**. First, set `mlflowoperator: Managed` in `DataScienceCluster` to deploy the operator (the `mlflow` flag in `OdhDashboardConfig` is deprecated — ignore it). Second, create the cluster-scoped `MLflow` CR (`mlflow-instance.yaml`) — the operator does not auto-create an instance. Without the `MLflow` CR, the dashboard shows "MLflow is currently unavailable" even though the operator pod is running. The instance uses SQLite + PVC for persistence (no S3 needed) and `workspaceLabelSelector: opendatahub.io/dashboard: "true"` to expose all RHOAI data science project namespaces. Verify: `oc get mlflow mlflow -o jsonpath='{.status}'`.
 - **Models-as-a-Service / MaaS** (`manifests/08/maas-gateway.yaml` + `manifests/08/rhoai-dsc-enable-maas.yaml` + `manifests/08/odh-dashboard-config-enable-maas.yaml`): MaaS requires **three steps**. (1) Create `maas-default-gateway` in `openshift-ingress` — the name is hardcoded; the DSC reconcile fails with "GatewayNotReady" if it doesn't exist first. (2) Set `kserve.modelsAsService: Managed` in DSC. (3) Set `modelAsService: true` in `OdhDashboardConfig`. Kuadrant (RHCL) must be installed — it is (Step 2). Verify: `oc get DataScienceCluster default-dsc -o jsonpath='{.status.conditions[?(@.type=="ModelsAsServiceReady")]}'`.
+- **MaaS infrastructure prerequisites** (`manifests/09/`): even after the three MaaS steps above, `ModelsAsServiceReady` stays `False (PrerequisitesNotMet)` until three more things exist in `redhat-ods-applications`: (1) the `maas-db-config` Secret with a valid PostgreSQL `DB_CONNECTION_URL`, (2) a running Authorino instance, and (3) optionally the `cluster-monitoring-config` ConfigMap in `openshift-monitoring`. All three are in `manifests/09/`.
+- **`maas-db-config` Secret** (`manifests/09/maas-db-config.yaml`): key `DB_CONNECTION_URL`, value format `postgresql://user:pass@host:5432/db?sslmode=disable`. The companion PostgreSQL deployment (`maas-postgresql.yaml`) runs in `redhat-ods-applications` and is reachable in-cluster at `maas-postgresql.redhat-ods-applications.svc.cluster.local:5432`. **Edit both files** to replace the default `changeme` password before applying. The password in `POSTGRES_PASSWORD` (maas-postgresql.yaml) and in the URL (maas-db-config.yaml) must match.
+- **Authorino instance for MaaS** (`manifests/09/authorino-instance.yaml`): The Authorino Operator (installed in Step 2.3) requires an `Authorino` CR (`operator.authorino.kuadrant.io/v1beta1`) deployed in `redhat-ods-applications`. `clusterWide: true` lets it watch `AuthConfig` CRs across all model namespaces. TLS is disabled on the listener — plain HTTP is sufficient for in-cluster MaaS communication.
+- **PostgreSQL image for MaaS**: `registry.redhat.io/rhel9/postgresql-15` — data path is `/var/lib/pgsql/data` (Red Hat convention). Credentials come from the `maas-postgresql-credentials` Secret; the `maas-db-config` Secret must reference the same password value.
 
 ## Contributing
 

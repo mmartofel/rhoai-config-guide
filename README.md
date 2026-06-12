@@ -386,17 +386,25 @@ Once `"Available": true`, the "Experiments (MLflow)" section and "Launch MLflow"
 
 ### 8.5 Enable Models-as-a-Service (MaaS)
 
-***MaaS provides an AI inference gateway with token quotas, rate limiting, and self-service API keys. It is GA in RHOAI 3.4 and requires Kuadrant (already installed in Step 2.6) plus three explicit steps.***
+***MaaS provides an AI inference gateway with token quotas, rate limiting, and self-service API keys. It is GA in RHOAI 3.4 and requires Kuadrant (already installed in Step 2.6). Full setup has two parts: gateway/DSC/UI wiring (steps 8.5.1–8.5.3) and infrastructure prerequisites (steps 8.5.4–8.5.7). Both parts must be complete for `ModelsAsServiceReady` to become True.***
+
+#### 8.5.1 Create the MaaS Gateway
 
 > **Important:** The MaaS DSC component requires a Gateway named `maas-default-gateway` in `openshift-ingress` to exist **before** the DSC reconcile runs. The name is hardcoded — the reconcile will fail with "GatewayNotReady" if the gateway is not created first.
 
-**Step 1 — create the MaaS Gateway** (GatewayClass + Gateway, same pattern as llm-d):
+Apply the GatewayClass and Gateway (same pattern as the llm-d gateway in Step 6):
 
 ```bash
 oc apply -f manifests/08/maas-gateway.yaml
 ```
 
-**Step 2 — enable `modelsAsService` in DataScienceCluster:**
+Verify the Gateway is programmed:
+
+```bash
+oc get gateway maas-default-gateway -n openshift-ingress
+```
+
+#### 8.5.2 Enable `modelsAsService` in DataScienceCluster
 
 ```bash
 oc patch DataScienceCluster default-dsc \
@@ -404,16 +412,7 @@ oc patch DataScienceCluster default-dsc \
   --patch-file manifests/08/rhoai-dsc-enable-maas.yaml
 ```
 
-Verify:
-
-```bash
-oc get DataScienceCluster default-dsc \
-  -o jsonpath='{.status.conditions[?(@.type=="ModelsAsServiceReady")]}'
-```
-
-Expected: `"status":"True"`.
-
-**Step 3 — enable MaaS UI in OdhDashboardConfig:**
+#### 8.5.3 Enable MaaS UI in OdhDashboardConfig
 
 ```bash
 oc patch OdhDashboardConfig odh-dashboard-config \
@@ -421,6 +420,59 @@ oc patch OdhDashboardConfig odh-dashboard-config \
   --type=merge \
   --patch-file manifests/08/odh-dashboard-config-enable-maas.yaml
 ```
+
+#### 8.5.4 Deploy PostgreSQL for MaaS
+
+MaaS requires a PostgreSQL database to store API key lifecycle data. The manifests in `manifests/09/` deploy a PostgreSQL instance inside `redhat-ods-applications`.
+
+> **Before applying:** edit `manifests/09/maas-postgresql.yaml` and change `POSTGRES_PASSWORD: changeme` to a real password. Then update the password in `manifests/09/maas-db-config.yaml` to match (`DB_CONNECTION_URL` value).
+
+```bash
+oc apply -f manifests/09/maas-postgresql.yaml
+oc get pods -n redhat-ods-applications -l app=maas-postgresql -w   # wait until Running
+```
+
+#### 8.5.5 Create the `maas-db-config` Secret
+
+The MaaS reconciler looks for a Secret named `maas-db-config` in `redhat-ods-applications` with a `DB_CONNECTION_URL` key. Without it, `ModelsAsServiceReady` stays `False (PrerequisitesNotMet)`.
+
+```bash
+oc apply -f manifests/09/maas-db-config.yaml
+```
+
+Verify the Secret exists:
+
+```bash
+oc get secret maas-db-config -n redhat-ods-applications
+```
+
+#### 8.5.6 Deploy Authorino Instance
+
+MaaS uses Authorino for API key authentication and authorization. The Authorino Operator was installed in Step 2.3 but requires an explicit instance to be created.
+
+```bash
+oc apply -f manifests/09/authorino-instance.yaml
+oc get pods -n redhat-ods-applications -l app.kubernetes.io/name=authorino -w
+```
+
+#### 8.5.7 (Optional) Enable User Workload Monitoring
+
+User Workload Monitoring enables MaaS token usage metrics per model. It is optional — MaaS will become ready without it, but showback dashboards will not be available.
+
+```bash
+oc apply -f manifests/09/cluster-monitoring-config.yaml
+```
+
+#### Verify MaaS is Ready
+
+After all prerequisites exist, the MaaS reconciler may take 2–3 minutes to re-evaluate:
+
+```bash
+oc get DataScienceCluster default-dsc \
+  -o jsonpath='{.status.conditions[?(@.type=="ModelsAsServiceReady")]}'
+```
+
+Expected: `"status":"True"`. Once ready, the overall DSC returns to `Ready` phase and the "Models as a Service" section appears in the RHOAI dashboard.
 
 ## 9. Deploy a LLMInferenceService (llm-d)
 

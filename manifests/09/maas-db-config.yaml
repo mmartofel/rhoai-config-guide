@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: maas-db-config
+  namespace: redhat-ods-applications
+type: Opaque
+stringData:
+  # Password must match POSTGRES_PASSWORD in maas-postgresql.yaml
+  DB_CONNECTION_URL: "postgresql://maas:changeme@maas-postgresql.redhat-ods-applications.svc.cluster.local:5432/maasdb?sslmode=disable"
