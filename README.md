@@ -184,23 +184,37 @@ oc apply -f manifests/02/jobset-operator.yaml
 
 ***Red Hat Connectivity Link (Kuadrant) is required to enable LLMInferenceService, providing API gateway functionality, authentication, rate limiting, and traffic policy enforcement for LLM model endpoints.***
 
-Apply the Namespace, OperatorGroup, and Subscription object
+Apply the Namespace, OperatorGroup, and Subscription object:
 
 ```bash
 oc apply -f manifests/02/connectivity-link-operator.yaml
 ```
 
-Verify the operator is installed and running before moving on.
+Verify the operator is installed and running before moving on:
 
 ```bash
 oc get pods -n kuadrant-system -w
 ```
 
-Once the operator is ready, enable the Kuadrant web console plugin so it appears in the OpenShift web console:
+Once the operator is ready, enable the Kuadrant web console plugin:
 
 ```bash
 oc patch console.operator.openshift.io cluster --type=json \
   -p '[{"op":"add","path":"/spec/plugins/-","value":"kuadrant-console-plugin"}]'
+```
+
+Then create the Kuadrant instance. This activates the operator and wires up its components (Authorino, Limitador, DNS Operator). Without this CR, any `AuthPolicy` resources are accepted but never enforced — Kuadrant's internal Authorino is not started and no `AuthConfig` resources are generated.
+
+```bash
+oc apply -f manifests/02/kuadrant-instance.yaml
+```
+
+Verify Kuadrant is ready:
+
+```bash
+oc get kuadrant kuadrant -n kuadrant-system \
+  -o jsonpath='{.status.conditions[0].message}'
+# Expected: "Kuadrant is ready"
 ```
 
 ### 2.7 Install the LeaderWorkerSet Operator
