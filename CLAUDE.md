@@ -61,15 +61,15 @@ oc apply -f manifests/06/gpu-hardware-profile.yaml
 # 7a — Create the dybbol project (makes it visible in RHOAI dashboard as a Data Science Project)
 oc apply -f manifests/07/dybbol-project.yaml
 
-# 7b — Create the HuggingFace token secret (required for hf:// model URIs only)
+# 7b — Primary: Qwen2.5-7B-Instruct from Red Hat OCI registry (namespace: dybbol, MaaS-ready)
+oc apply -f manifests/07/llm-inference-qwen25-7b-instruct.yaml
+
+# 7c — (Optional) Quick-start: Qwen3-0.6B from HuggingFace (creates my-first-model namespace inline, NOT MaaS-ready)
 cp user.env.example user.env        # fill in your HF_TOKEN
 oc create secret generic huggingface-token \
-  -n dybbol \
+  -n my-first-model \
   --from-env-file=user.env
-# Apply the inference service manifest
-oc apply -f manifests/07/llm-inference.yaml                        # Qwen3-0.6B from HuggingFace
-# or
-oc apply -f manifests/07/llm-inference-qwen25-7b-instruct.yaml     # Qwen2.5-7B-Instruct from Red Hat OCI registry
+oc apply -f manifests/07/llm-inference.yaml
 
 # Step 8 — Enable dashboard features
 # 8a — Gen AI Studio (UI flag in OdhDashboardConfig)
@@ -206,8 +206,8 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 
 - [ ] **Test MaaS end-to-end** — create a Subscription and Authorization Policy via the dashboard, generate an API key, confirm `curl https://maas.<apps-domain>/v1/chat/completions` returns a valid response. Document any additional errors encountered.
 - [ ] **Declarative Subscription / Authorization Policy manifests** — the admin flow (Subscription → AuthPolicy) is currently dashboard-only. Investigate whether `MaaSSubscription` and `MaaSAuthorizationPolicy` CRDs exist (`oc get crd | grep maas`) and, if so, add manifests to `manifests/09/` so the full MaaS setup is reproducible without the UI.
-- [ ] **`llm-inference.yaml` (HuggingFace / Qwen3-0.6B) namespace alignment** — this manifest still creates `my-first-model` inline. Decide whether it should also target `dybbol` (for consistency) or stay as a standalone quick-start example with its own namespace.
-- [ ] **HuggingFace example MaaS-readiness** — if the HuggingFace model should also be served via MaaS, update `llm-inference.yaml` to use `maas-default-gateway` and create a second `MaaSModelRef` for it.
+- [x] **`llm-inference.yaml` (HuggingFace / Qwen3-0.6B) namespace alignment** — decided: stays in `my-first-model` (inline in the manifest) as a standalone optional quick-start. `dybbol` is the primary MaaS-ready namespace for `llm-inference-qwen25-7b-instruct.yaml`.
+- [x] **HuggingFace example MaaS-readiness** — decided: out of scope. `llm-inference.yaml` is a community quick-start using the default `openshift-ai-inference` gateway; it is not intended for MaaS. Only `llm-inference-qwen25-7b-instruct.yaml` is MaaS-ready.
 
 ## Contributing
 
