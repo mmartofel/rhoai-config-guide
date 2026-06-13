@@ -42,8 +42,11 @@ oc apply -f manifests/02/leader-worker-set-operator.yaml
 oc apply -f manifests/03/rhoai-operator.yaml
 oc apply -f manifests/03/rhoai-operator-dsc.yaml
 
-# Step 4 — MySQL backend for Model Registry (Kustomize)
+# Step 4 — Shared PostgreSQL + Model Registry (Kustomize)
+# Deploys PostgreSQL in redhat-ods-applications (shared by Model Registry and MaaS),
+# creates the registry database via init script, and applies the ModelRegistry CR.
 oc apply -k manifests/04/
+oc get pods -n redhat-ods-applications -l app=maas-postgresql -w   # wait until Running
 
 # Step 5 — Enable LlamaStack Operator + create llm-d inference Gateway
 oc patch DataScienceCluster default-dsc \
@@ -94,13 +97,12 @@ oc patch OdhDashboardConfig odh-dashboard-config \
   --type=merge \
   --patch-file manifests/08/odh-dashboard-config-enable-maas.yaml
 
-# Step 9 — MaaS infrastructure prerequisites: PostgreSQL + Authorino + optional User Workload Monitoring
+# Step 9 — MaaS infrastructure prerequisites: maas-db-config Secret + Authorino + optional User Workload Monitoring
 # Note: Steps 8d gateway/DSC/UI must be applied before or after Step 9 — both must be complete for
 # ModelsAsServiceReady to become True. The order between 8d and 9 does not matter.
+# PostgreSQL is already running from Step 4 — no re-deploy needed.
 
-# 9a — Deploy PostgreSQL and create the maas-db-config Secret
-oc apply -f manifests/09/maas-postgresql.yaml
-oc get pods -n redhat-ods-applications -l app=maas-postgresql -w   # wait until Running
+# 9a — Create the maas-db-config Secret (PostgreSQL deployed in Step 4)
 oc apply -f manifests/09/maas-db-config.yaml
 
 # 9b — Deploy Authorino instance in redhat-ods-applications
@@ -165,20 +167,21 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 | `manifests/01/` | NFD Operator, NVIDIA GPU Operator, optional GPU sample workload |
 | `manifests/02/` | KServe prerequisite operators: Service Mesh 3, Serverless, Authorino, Cert-Manager, JobSet, Red Hat Connectivity Link, LeaderWorkerSet |
 | `manifests/03/` | RHOAI Operator (`rhods-operator`) and `DataScienceCluster` CRD |
-| `manifests/04/` | MySQL deployment for Model Registry backend (Kustomize, targets `rhoai-model-registries` namespace) |
+| `manifests/04/` | Shared PostgreSQL instance (`redhat-ods-applications`) + Model Registry CR (`rhoai-model-registries`). PostgreSQL serves both the Model Registry (`registry` DB) and MaaS (`maasdb` DB). Kustomize. |
 | `manifests/05/` | DSC patches and llm-d Gateway: LlamaStack enablement patch + `openshift-ai-inference` GatewayClass/Gateway |
 | `manifests/06/` | GPU `HardwareProfile` for RHOAI workloads (`gpu-profile` in `redhat-ods-applications`) |
 | `manifests/07/` | `dybbol` project namespace + `LLMInferenceService` examples: Qwen3-0.6B (HuggingFace) and Qwen2.5-7B-Instruct (Red Hat OCI) |
 | `manifests/08/` | Dashboard feature enablement: Gen AI Studio, additional UI flags, MLflow (operator + instance), and MaaS (gateway + DSC + UI flag) |
-| `manifests/09/` | MaaS infrastructure prerequisites: PostgreSQL deployment + credentials, `maas-db-config` Secret, Authorino instance, optional User Workload Monitoring, DNS record template for maas gateway, `MaaSModelRef` to register the deployed model |
+| `manifests/09/` | MaaS infrastructure prerequisites: `maas-db-config` Secret, Authorino instance, optional User Workload Monitoring, DNS record template for maas gateway, `MaaSModelRef` to register the deployed model. PostgreSQL was moved to `manifests/04/`. |
+| `manifests/mysql/` | Archived MySQL manifests (no longer in the main installation path; kept for reference) |
 
 ## Key Configuration Details
 
 - **RHOAI channel**: `stable-3.x` — must be set explicitly; the default `stable` channel still pins to v2.x.
 - **Service Mesh**: uses `servicemeshoperator3` (not the legacy v2 operator name).
 - **DataScienceCluster (`manifests/03/rhoai-operator-dsc.yaml`)**: controls which RHOAI components are `Managed` vs `Removed`. KServe raw deployment is set to `Headless`; Kueue and MLflow are `Removed` by default.
-- **MySQL image**: `registry.redhat.io/rhel10/mysql-84` — data path is `/var/lib/mysql/data` (Red Hat image convention, not upstream `/var/lib/mysql`). All credentials come from the `mysql-credentials` Secret.
-- **Model Registry namespace**: `rhoai-model-registries` (matches `registriesNamespace` in the DSC).
+- **Shared PostgreSQL** (`manifests/04/`): one `registry.redhat.io/rhel9/postgresql-15` instance in `redhat-ods-applications` serves two databases — `maasdb` (MaaS) and `registry` (Model Registry). The `maas-postgresql-credentials` Secret (env vars `POSTGRESQL_USER/PASSWORD/DATABASE`) provisions the primary `maasdb`/`maas` user. An init script mounted at `/usr/share/container-scripts/postgresql/start/init-registry-db.sh` creates the `registry` database and `registry` role on first initialization. Data path: `/var/lib/pgsql/data`. `POSTGRESQL_ADMIN_PASSWORD` is set for emergency postgres superuser access.
+- **Model Registry namespace**: `rhoai-model-registries` (matches `registriesNamespace` in the DSC). The `ModelRegistry` CR uses `spec.postgres` and connects cross-namespace via `maas-postgresql.redhat-ods-applications.svc.cluster.local`. The `registry-postgresql-credentials` Secret must exist in `rhoai-model-registries` so the operator can read it — a copy is deployed by the step 4 Kustomize bundle. Verify CRD support before applying: `oc explain ModelRegistry.spec` (expect a `postgres` field).
 - **LlamaStack**: enabled via a `--type=merge` patch to `DataScienceCluster`; do NOT use `oc patch --patch-file` without `--type=merge` — the CRD only supports merge-patch and json-patch, not strategic-merge-patch.
 - **llm-d Gateway** (`manifests/05/openshift-ai-inference-gateway.yaml`): `LLMInferenceService` defaults to a Gateway named `openshift-ingress/openshift-ai-inference` which must be created manually. Uses a dedicated `openshift-ai-inference` GatewayClass (controller: `openshift.io/gateway-controller/v1`) separate from the RHOAI data-science gateway. TLS reuses the `data-science-gateway-service-tls` secret. `allowedRoutes.from: All` permits HTTPRoutes from any model namespace.
 - **GPU HardwareProfile** (`manifests/06/gpu-hardware-profile.yaml`): creates `gpu-profile` in `redhat-ods-applications`; referenced by `LLMInferenceService` via the `opendatahub.io/hardware-profile-name` annotation.
@@ -188,10 +191,10 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 - **Additional UI flags** (`manifests/08/odh-dashboard-config-enable-features.yaml`): enables `trainingJobs`, `llmGatewayField`, `mcpCatalog`, and `promptManagement` in one patch. All are opt-in booleans in `OdhDashboardConfig`. Prerequisites already met: `trainer: Managed`, llm-d gateway deployed, `llamastackoperator: Managed`.
 - **MLflow** (`manifests/08/rhoai-dsc-enable-mlflow.yaml` + `manifests/08/mlflow-instance.yaml`): enabling MLflow requires **two separate steps**. First, set `mlflowoperator: Managed` in `DataScienceCluster` to deploy the operator (the `mlflow` flag in `OdhDashboardConfig` is deprecated — ignore it). Second, create the cluster-scoped `MLflow` CR (`mlflow-instance.yaml`) — the operator does not auto-create an instance. Without the `MLflow` CR, the dashboard shows "MLflow is currently unavailable" even though the operator pod is running. The instance uses SQLite + PVC for persistence (no S3 needed) and `workspaceLabelSelector: opendatahub.io/dashboard: "true"` to expose all RHOAI data science project namespaces. Verify: `oc get mlflow mlflow -o jsonpath='{.status}'`.
 - **Models-as-a-Service / MaaS** (`manifests/08/maas-gateway.yaml` + `manifests/08/rhoai-dsc-enable-maas.yaml` + `manifests/08/odh-dashboard-config-enable-maas.yaml`): MaaS requires **three steps**. (1) Create `maas-default-gateway` in `openshift-ingress` — the name is hardcoded; the DSC reconcile fails with "GatewayNotReady" if it doesn't exist first. (2) Set `kserve.modelsAsService: Managed` in DSC. (3) Set `modelAsService: true` in `OdhDashboardConfig`. Kuadrant (RHCL) must be installed — it is (Step 2). Verify: `oc get DataScienceCluster default-dsc -o jsonpath='{.status.conditions[?(@.type=="ModelsAsServiceReady")]}'`.
-- **MaaS infrastructure prerequisites** (`manifests/09/`): even after the three MaaS steps above, `ModelsAsServiceReady` stays `False (PrerequisitesNotMet)` until three more things exist in `redhat-ods-applications`: (1) the `maas-db-config` Secret with a valid PostgreSQL `DB_CONNECTION_URL`, (2) a running Authorino instance, and (3) optionally the `cluster-monitoring-config` ConfigMap in `openshift-monitoring`. All three are in `manifests/09/`.
-- **`maas-db-config` Secret** (`manifests/09/maas-db-config.yaml`): key `DB_CONNECTION_URL`, value format `postgresql://user:pass@host:5432/db?sslmode=disable`. The companion PostgreSQL deployment (`maas-postgresql.yaml`) runs in `redhat-ods-applications` and is reachable in-cluster at `maas-postgresql.redhat-ods-applications.svc.cluster.local:5432`.
+- **MaaS infrastructure prerequisites** (`manifests/09/`): even after the three MaaS steps above, `ModelsAsServiceReady` stays `False (PrerequisitesNotMet)` until three more things exist in `redhat-ods-applications`: (1) the `maas-db-config` Secret with a valid PostgreSQL `DB_CONNECTION_URL`, (2) a running Authorino instance, and (3) optionally the `cluster-monitoring-config` ConfigMap in `openshift-monitoring`. The Secret and Authorino instance are in `manifests/09/`. PostgreSQL is already running from Step 4.
+- **`maas-db-config` Secret** (`manifests/09/maas-db-config.yaml`): key `DB_CONNECTION_URL`, value format `postgresql://user:pass@host:5432/db?sslmode=disable`. References the shared PostgreSQL deployed in Step 4 at `maas-postgresql.redhat-ods-applications.svc.cluster.local:5432`, database `maasdb`, user `maas`.
 - **Authorino instance for MaaS** (`manifests/09/authorino-instance.yaml`): The Authorino Operator (installed in Step 2.3) requires an `Authorino` CR (`operator.authorino.kuadrant.io/v1beta1`) deployed in `redhat-ods-applications`. `clusterWide: true` lets it watch `AuthConfig` CRs across all model namespaces. TLS is disabled on the listener — plain HTTP is sufficient for in-cluster MaaS communication.
-- **PostgreSQL image for MaaS**: `registry.redhat.io/rhel9/postgresql-15` — data path is `/var/lib/pgsql/data` (Red Hat convention). Credentials come from the `maas-postgresql-credentials` Secret; the `maas-db-config` Secret must reference the same password value.
+- **PostgreSQL image (shared)**: `registry.redhat.io/rhel9/postgresql-15` — data path is `/var/lib/pgsql/data` (Red Hat convention). Primary credentials come from `maas-postgresql-credentials`; the `maas-db-config` Secret must use the same password for the `maas` user. The `registry` user credentials are in `registry-postgresql-credentials` (deployed to both `redhat-ods-applications` and `rhoai-model-registries`).
 - **Kuadrant CR** (`manifests/02/kuadrant-instance.yaml`): The RHCL (Kuadrant) operator alone is not enough — a `Kuadrant` CR must be created in `kuadrant-system` to activate the operator and wire up its components (Authorino, Limitador, DNS Operator). Without the CR, `AuthPolicy` resources are accepted but never enforced (`"kuadrant is not installed, please create resource"`), meaning Kuadrant's Authorino is never started and no `AuthConfig` resources are generated. Apply immediately after the RHCL operator is ready. Verify: `oc get kuadrant kuadrant -n kuadrant-system -o jsonpath='{.status.conditions[0].message}'` → `"Kuadrant is ready"`.
 - **`opendatahub.io/connections` annotation portability**: The RHOAI dashboard injects an `opendatahub.io/connections: <secret-name>` annotation when you create a `LLMInferenceService` or `InferenceService` through the UI. The mutating webhook `connection-llmisvc.opendatahub.io` (failurePolicy: Fail) validates that the named secret exists in the target namespace on every CREATE/UPDATE — if it doesn't, the apply is denied. Dashboard-generated secret names (e.g. `secret-6a153e`) are auto-generated and namespace-specific; never commit them to manifests. Remove the annotation for images pulled via the cluster pull secret (`registry.redhat.io`, `quay.io`, etc.). Only include it when you have pre-created a named data connection secret in the target namespace and want the dashboard to display the connection.
 - **`dybbol` project namespace** (`manifests/07/dybbol-project.yaml`): The model deployment namespace must carry the label `opendatahub.io/dashboard: "true"` to appear as a Data Science Project in the RHOAI dashboard. Without this label the namespace exists but is invisible to the dashboard. The label `modelmesh-enabled: "false"` tells RHOAI to use KServe/llm-d rather than ModelMesh for serving. Apply with `oc apply -f manifests/07/dybbol-project.yaml` before deploying the `LLMInferenceService` — the namespace must exist first.

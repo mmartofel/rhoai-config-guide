@@ -256,14 +256,27 @@ After successfull login you can start working with RHOAI web interface.
 
 ![alt text](./img/2.png)
 
-## 4. Deploy MySQL Backend for Model Registry
+## 4. Deploy Shared PostgreSQL and Model Registry
 
-***The Model Registry provides a central store for tracking model versions, metadata, and deployment history. It requires a MySQL backend.***
+***The Model Registry provides a central store for tracking model versions, metadata, and deployment history. It requires a PostgreSQL backend. The same PostgreSQL instance is later used by MaaS (Step 8.5), so deploying it here avoids a second database in Step 9.***
 
-Apply the Kustomize configuration (creates namespace, deployment, service, and credentials Secret):
+> **Pre-flight check:** The `ModelRegistry` CR uses `spec.postgres`. Confirm the RHOAI 3.4 CRD exposes this field before applying:
+> ```bash
+> oc explain ModelRegistry.spec   # expect a 'postgres' field alongside 'mysql'
+> ```
+
+Apply the Kustomize configuration. This deploys PostgreSQL in `redhat-ods-applications` (with an init script that creates the `registry` database on first start), copies the registry credentials into `rhoai-model-registries`, and applies the `ModelRegistry` CR:
 
 ```bash
 oc apply -k manifests/04/
+oc get pods -n redhat-ods-applications -l app=maas-postgresql -w   # wait until Running
+```
+
+Verify the Model Registry controller reconciled:
+
+```bash
+oc get modelregistry local-model-registry -n rhoai-model-registries \
+  -o jsonpath='{.status.conditions}'
 ```
 
 ## 5. Enable LlamaStack Operator
@@ -435,16 +448,9 @@ oc patch OdhDashboardConfig odh-dashboard-config \
   --patch-file manifests/08/odh-dashboard-config-enable-maas.yaml
 ```
 
-#### 8.5.4 Deploy PostgreSQL for MaaS
+#### 8.5.4 Create the `maas-db-config` Secret
 
-MaaS requires a PostgreSQL database to store API key lifecycle data. The manifests in `manifests/09/` deploy a PostgreSQL instance inside `redhat-ods-applications`.
-
-```bash
-oc apply -f manifests/09/maas-postgresql.yaml
-oc get pods -n redhat-ods-applications -l app=maas-postgresql -w   # wait until Running
-```
-
-#### 8.5.5 Create the `maas-db-config` Secret
+> **PostgreSQL is already running** from Step 4. No new database deployment is needed here.
 
 The MaaS reconciler looks for a Secret named `maas-db-config` in `redhat-ods-applications` with a `DB_CONNECTION_URL` key. Without it, `ModelsAsServiceReady` stays `False (PrerequisitesNotMet)`.
 
@@ -458,7 +464,7 @@ Verify the Secret exists:
 oc get secret maas-db-config -n redhat-ods-applications
 ```
 
-#### 8.5.6 Deploy Authorino Instance
+#### 8.5.5 Deploy Authorino Instance
 
 MaaS uses Authorino for API key authentication and authorization. The Authorino Operator was installed in Step 2.3 but requires an explicit instance to be created.
 
@@ -467,7 +473,7 @@ oc apply -f manifests/09/authorino-instance.yaml
 oc get pods -n redhat-ods-applications -l app.kubernetes.io/name=authorino -w
 ```
 
-#### 8.5.7 (Optional) Enable User Workload Monitoring
+#### 8.5.6 (Optional) Enable User Workload Monitoring
 
 User Workload Monitoring enables MaaS token usage metrics per model. It is optional — MaaS will become ready without it, but showback dashboards will not be available.
 
@@ -475,7 +481,7 @@ User Workload Monitoring enables MaaS token usage metrics per model. It is optio
 oc apply -f manifests/09/cluster-monitoring-config.yaml
 ```
 
-#### 8.5.8 Create the MaaS DNS Record
+#### 8.5.7 Create the MaaS DNS Record
 
 The RHOAI dashboard's MaaS UI sidecar constructs the MaaS API URL as `maas.<apps-domain>`. On most OpenShift clusters the wildcard `*.apps.<domain>` DNS entry points to the OpenShift Router, not to the `maas-default-gateway` LoadBalancer. Without a specific DNS override the Router returns 503 and the API keys panel shows "Error loading components".
 
