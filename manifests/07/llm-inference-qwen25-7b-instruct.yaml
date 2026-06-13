@@ -17,7 +17,7 @@ spec:
   model:
     name: redhataiqwen25-7b-instruct
     uri: oci://registry.redhat.io/rhelai1/modelcar-qwen2-5-7b-instruct:1.5
-  replicas: 2
+  replicas: 1
   router:
     gateway:
       refs:
@@ -28,6 +28,9 @@ spec:
   template:
     containers:
     - name: main
+      args:
+        - --max-model-len=4096
+        - --gpu-memory-utilization=0.95
       resources:
         limits:
           cpu: "1"
