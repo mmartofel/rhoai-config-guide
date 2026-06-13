@@ -107,7 +107,7 @@ oc apply -f manifests/09/maas-db-config.yaml
 
 # 9b — Deploy Authorino instance in redhat-ods-applications
 oc apply -f manifests/09/authorino-instance.yaml
-oc get pods -n redhat-ods-applications -l app.kubernetes.io/name=authorino -w
+oc get pods -n redhat-ods-applications -l authorino-resource=authorino -w
 
 # 9c — (Optional) Enable User Workload Monitoring
 oc apply -f manifests/09/cluster-monitoring-config.yaml

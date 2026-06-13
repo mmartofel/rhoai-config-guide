@@ -471,7 +471,7 @@ MaaS uses Authorino for API key authentication and authorization. The Authorino 
 
 ```bash
 oc apply -f manifests/09/authorino-instance.yaml
-oc get pods -n redhat-ods-applications -l app.kubernetes.io/name=authorino -w
+oc get pods -n redhat-ods-applications -l authorino-resource=authorino -w
 ```
 
 #### 8.4.6 (Optional) Enable User Workload Monitoring
