@@ -262,7 +262,7 @@ After successfull login you can start working with RHOAI web interface.
 
 > **Pre-flight check:** The `ModelRegistry` CR uses `spec.postgres`. Confirm the RHOAI 3.4 CRD exposes this field before applying:
 > ```bash
-> oc explain ModelRegistry.spec   # expect a 'postgres' field alongside 'mysql'
+> oc explain ModelRegistry.spec --api-version=modelregistry.opendatahub.io/v1beta1
 > ```
 
 Apply the Kustomize configuration. This deploys PostgreSQL in `redhat-ods-applications` (with an init script that creates the `registry` database on first start), copies the registry credentials into `rhoai-model-registries`, and applies the `ModelRegistry` CR:
@@ -275,7 +275,8 @@ oc get pods -n redhat-ods-applications -l app=maas-postgresql -w   # wait until 
 Verify the Model Registry controller reconciled:
 
 ```bash
-oc get modelregistry local-model-registry -n rhoai-model-registries \
+oc get modelregistries.modelregistry.opendatahub.io local-model-registry \
+  -n rhoai-model-registries \
   -o jsonpath='{.status.conditions}'
 ```
 
