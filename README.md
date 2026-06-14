@@ -529,7 +529,7 @@ Expected: `"status":"True"`. Once ready, the overall DSC returns to `Ready` phas
 
 ## 9. Create the dybbol Data Science Project and Deploy LLM Inference
 
-***`LLMInferenceService` (llm-d) is the custom resource for serving large language models. It manages vLLM pods, an EPP scheduler, and HTTPRoute wiring automatically. The primary demo uses Qwen2.5-7B-Instruct from the Red Hat OCI registry, deployed into the `dybbol` Data Science Project and wired to the MaaS gateway.***
+***`LLMInferenceService` (llm-d) is the custom resource for serving large language models. It manages vLLM pods, an EPP scheduler, and HTTPRoute wiring automatically. The primary demo uses Qwen2.5-3B-Instruct from HuggingFace, deployed into the `dybbol` Data Science Project and wired to the MaaS gateway. (The 7B OCI variant requires a GPU with ≥20 GiB VRAM such as an A100 or H100; Tesla T4 nodes at 15 GiB cannot load the 7B weights with any remaining room for the KV cache.)***
 
 ### 9.1 Create the dybbol Data Science Project
 
@@ -543,15 +543,30 @@ oc apply -f manifests/07/dybbol-project.yaml
 > - `opendatahub.io/dashboard: "true"` — makes the namespace visible as a Data Science Project in the RHOAI dashboard. Without it the namespace exists but is invisible to RHOAI.
 > - `modelmesh-enabled: "false"` — tells RHOAI to use KServe/llm-d rather than ModelMesh for inference serving.
 
-### 9.2 Deploy Qwen2.5-7B-Instruct (primary demo)
+### 9.2 Deploy Qwen2.5-3B-Instruct (primary demo)
 
-This deploys the `Qwen2.5-7B-Instruct` model from the Red Hat OCI registry into the `dybbol` namespace. It uses the `maas-default-gateway` so it is immediately MaaS-ready (Step 10 registers it).
+This deploys `Qwen2.5-3B-Instruct` from HuggingFace into the `dybbol` namespace. It is wired to the `maas-default-gateway` and is immediately MaaS-ready (Step 10 registers it). The 3B model (~6 GiB weights in BF16) fits comfortably on a Tesla T4 (15 GiB VRAM).
+
+First, create the HuggingFace token secret in `dybbol` (required for `hf://` model URIs):
 
 ```bash
-oc apply -f manifests/07/llm-inference-qwen25-7b-instruct.yaml
+cp user.env.example user.env   # fill in your HF_TOKEN value
+oc create secret generic huggingface-token \
+  -n dybbol \
+  --from-env-file=user.env
 ```
 
-> **`opendatahub.io/connections` portability:** Never copy the `opendatahub.io/connections: <secret-name>` annotation from dashboard-exported YAMLs into committed manifests. The RHOAI mutating webhook (`connection-llmisvc.opendatahub.io`, `failurePolicy: Fail`) validates that the referenced secret exists in the target namespace and hard-blocks the apply if it doesn't. Omit the annotation for images covered by the cluster pull secret (`registry.redhat.io`, `quay.io`).
+> **Never commit `user.env`** — it is gitignored. Without a valid token the `storage-initializer` init container stalls silently due to anonymous download rate limits.
+
+Then deploy the inference service:
+
+```bash
+oc apply -f manifests/07/llm-inference-qwen25-3b-instruct.yaml
+```
+
+> **GPU requirement note:** If your cluster has GPUs with ≥20 GiB VRAM (A100, H100), you can instead use the Red Hat OCI variant: `oc apply -f manifests/07/llm-inference-qwen25-7b-instruct.yaml`. The 7B model (14.26 GiB weights) exceeds T4 capacity.
+
+> **`opendatahub.io/connections` portability:** Never copy the `opendatahub.io/connections: <secret-name>` annotation from dashboard-exported YAMLs into committed manifests. The RHOAI mutating webhook (`connection-llmisvc.opendatahub.io`, `failurePolicy: Fail`) validates that the referenced secret exists in the target namespace and hard-blocks the apply if it doesn't.
 
 ### 9.3 Monitor and verify
 
@@ -596,7 +611,7 @@ oc apply -f manifests/09/maas-model-ref.yaml
 Verify the MaaSModelRef reaches `Ready` phase (allow ~30 seconds):
 
 ```bash
-oc get maasmodelref qwen25-7b-instruct -n dybbol \
+oc get maasmodelref qwen25-3b-instruct -n dybbol \
   -o jsonpath='{.status.phase}{"\n"}{range .status.conditions[*]}{.type}{": "}{.status}{" — "}{.message}{"\n"}{end}'
 # Expected: Ready / Ready: True — Successfully reconciled
 ```
@@ -618,7 +633,7 @@ curl -s \
   https://maas.${APPS_DOMAIN}/v1/models | python3 -m json.tool
 ```
 
-Expected: a JSON list containing `RedHatAI/Qwen2.5-7B-Instruct`. Once working, use the same `maas.${APPS_DOMAIN}/v1/chat/completions` endpoint for inference calls.
+Expected: a JSON list containing `Qwen/Qwen2.5-3B-Instruct`. Once working, use the same `maas.${APPS_DOMAIN}/v1/chat/completions` endpoint for inference calls.
 
 ## 🤝 Contributing
 

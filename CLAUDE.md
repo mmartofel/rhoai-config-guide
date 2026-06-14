@@ -61,11 +61,16 @@ oc apply -f manifests/06/gpu-hardware-profile.yaml
 # 7a — Create the dybbol project (makes it visible in RHOAI dashboard as a Data Science Project)
 oc apply -f manifests/07/dybbol-project.yaml
 
-# 7b — Primary: Qwen2.5-7B-Instruct from Red Hat OCI registry (namespace: dybbol, MaaS-ready)
-oc apply -f manifests/07/llm-inference-qwen25-7b-instruct.yaml
+# 7b — Primary: Qwen2.5-3B-Instruct from HuggingFace (namespace: dybbol, MaaS-ready, fits T4 GPU)
+cp user.env.example user.env        # fill in your HF_TOKEN
+oc create secret generic huggingface-token \
+  -n dybbol \
+  --from-env-file=user.env
+oc apply -f manifests/07/llm-inference-qwen25-3b-instruct.yaml
+# NOTE: If your cluster has GPUs with ≥20 GiB VRAM (A100, H100), use the 7B OCI variant instead:
+# oc apply -f manifests/07/llm-inference-qwen25-7b-instruct.yaml
 
 # 7c — (Optional) Quick-start: Qwen3-0.6B from HuggingFace (creates my-first-model namespace inline, NOT MaaS-ready)
-cp user.env.example user.env        # fill in your HF_TOKEN
 oc create secret generic huggingface-token \
   -n my-first-model \
   --from-env-file=user.env
