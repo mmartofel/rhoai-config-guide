@@ -516,6 +516,24 @@ oc get dnsrecord maas-api-dns -n openshift-ingress-operator \
 # Expected: "The DNS provider succeeded in ensuring the record"
 ```
 
+#### 8.4.8 Grant `tokenreviews` RBAC to the Kuadrant Authorino
+
+The Kuadrant operator deploys its own Authorino instance in `kuadrant-system` but does **not** grant it permission to call the Kubernetes Token Review API. The `openshift-identities` authentication rule in the MaaS `AuthPolicy` uses `kubernetesTokenReview` to validate OpenShift identity tokens. Without this permission every request through the MaaS gateway returns 401 and the dashboard API keys panel shows "Error loading components".
+
+The `authorino-manager-k8s-auth-role` ClusterRole (created by the Authorino Operator) already grants `create tokenreviews`. It only needs a binding for the Kuadrant Authorino service account:
+
+```bash
+oc create clusterrolebinding authorino-authorino-kuadrant-k8s-auth \
+  --clusterrole=authorino-manager-k8s-auth-role \
+  --serviceaccount=kuadrant-system:authorino-authorino
+```
+
+Verify the binding exists:
+
+```bash
+oc get clusterrolebinding authorino-authorino-kuadrant-k8s-auth
+```
+
 #### Verify MaaS is Ready
 
 After all prerequisites exist, the MaaS reconciler may take 2–3 minutes to re-evaluate:
