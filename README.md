@@ -665,7 +665,7 @@ APPS_DOMAIN=$(oc get ingresses.config cluster -o jsonpath='{.spec.domain}')
 # List available models (top-level /v1/models path works)
 curl -sk \
   -H "Authorization: Bearer $(oc whoami -t)" \
-  https://maas.${APPS_DOMAIN}/v1/models | python3 -m json.tool
+  "https://maas.${APPS_DOMAIN}/v1/models" | python3 -m json.tool
 ```
 
 Expected: a JSON list containing `"id": "qwen25-3b-instruct"` with `"ready": true`.
@@ -673,11 +673,13 @@ Expected: a JSON list containing `"id": "qwen25-3b-instruct"` with `"ready": tru
 For chat completions, the path is **namespace-prefixed** (`/v1/chat/completions` alone returns 404):
 
 ```bash
+APPS_DOMAIN=$(oc get ingresses.config cluster -o jsonpath='{.spec.domain}')
+
 curl -sk \
   -H "Authorization: Bearer $(oc whoami -t)" \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen25-3b-instruct","messages":[{"role":"user","content":"What is 2+2?"}],"max_tokens":64}' \
-  https://maas.${APPS_DOMAIN}/dybbol/qwen25-3b-instruct/v1/chat/completions | python3 -m json.tool
+  "https://maas.${APPS_DOMAIN}/dybbol/qwen25-3b-instruct/v1/chat/completions" | python3 -m json.tool
 ```
 
 Expected: `HTTP 200` with a `choices[0].message.content` containing the model's answer.
@@ -690,11 +692,13 @@ For per-user tokens that are not tied to the cluster-admin OpenShift token:
 2. Use the token as a Bearer header in any API call:
 
 ```bash
+APPS_DOMAIN=$(oc get ingresses.config cluster -o jsonpath='{.spec.domain}')
+
 curl -sk \
   -H "Authorization: Bearer <your-api-key>" \
-  https://maas.${APPS_DOMAIN}/dybbol/qwen25-3b-instruct/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen25-3b-instruct","messages":[{"role":"user","content":"Hello!"}],"max_tokens":64}' | python3 -m json.tool
+  -d '{"model":"qwen25-3b-instruct","messages":[{"role":"user","content":"Hello!"}],"max_tokens":64}' \
+  "https://maas.${APPS_DOMAIN}/dybbol/qwen25-3b-instruct/v1/chat/completions" | python3 -m json.tool
 ```
 
 ## 🤝 Contributing
