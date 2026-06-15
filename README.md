@@ -684,12 +684,26 @@ curl -sk \
 
 Expected: `HTTP 200` with a `choices[0].message.content` containing the model's answer.
 
-### 10.4 Generate a personal API key (optional)
+### 10.4 Authentication: when is an API key required?
 
-For per-user tokens that are not tied to the cluster-admin OpenShift token:
+There are two ways to reach the model and they use different authentication paths:
+
+| Access path | Auth required | Who uses it |
+|---|---|---|
+| **Gen AI Studio → Playground** | None — dashboard carries your OpenShift session | Anyone logged into the RHOAI dashboard |
+| **MaaS gateway (`maas.<domain>`)** with OpenShift token | OpenShift Bearer token (`oc whoami -t`) | CLI/scripts on a machine already logged into the cluster |
+| **MaaS gateway (`maas.<domain>`)** with API key | MaaS API key from Gen AI Studio → API keys | External apps, teammates, or scripts that have no OpenShift account |
+
+**Playground** routes directly to the LlamaStack distribution inside the cluster. No API key is ever needed — your OpenShift dashboard login is sufficient.
+
+**MaaS gateway** enforces Authorino authentication. Because the `MaaSAuthPolicy` grants `system:authenticated`, any valid OpenShift Bearer token is accepted — including `kubeadmin`'s. API keys are only needed when the caller has no OpenShift account (external apps, CI pipelines, shared access tokens).
+
+**OpenShift tokens expire** (typically 24 h); MaaS API keys last up to 365 days, making them more practical for long-running integrations.
+
+To generate a personal API key:
 
 1. **Gen AI Studio → API keys → Create API key** — set a name and expiration (1–365 days), copy the generated token
-2. Use the token as a Bearer header in any API call:
+2. Use it as a Bearer header in any MaaS call:
 
 ```bash
 APPS_DOMAIN=$(oc get ingresses.config cluster -o jsonpath='{.spec.domain}')
@@ -700,6 +714,65 @@ curl -sk \
   -d '{"model":"qwen25-3b-instruct","messages":[{"role":"user","content":"Hello!"}],"max_tokens":64}' \
   "https://maas.${APPS_DOMAIN}/dybbol/qwen25-3b-instruct/v1/chat/completions" | python3 -m json.tool
 ```
+
+## 11. LlamaStack Playground — post-creation fixes
+
+***The RHOAI dashboard creates the LlamaStack distribution automatically when you first open Gen AI Studio → Playground and select a project. Two bugs in the auto-generated configuration produce empty responses; apply both fixes immediately after the distribution appears.***
+
+Verify the distribution was created:
+
+```bash
+oc get llamastackdistribution -n dybbol
+# Expected: lsd-genai-playground   Ready
+```
+
+### 11.1 Fix the vLLM URL scheme (http → https)
+
+The dashboard generates `http://` for the vLLM workload service URL, but the `kserve-workload-svc` service is HTTPS-only (`appProtocol: https`). With the wrong scheme LlamaStack cannot reach vLLM and every Playground message returns an empty response.
+
+```bash
+CURRENT=$(oc get configmap llama-stack-config -n dybbol -o jsonpath='{.data.config\.yaml}')
+FIXED=$(echo "$CURRENT" | sed 's|http://qwen25-3b-instruct-kserve-workload-svc|https://qwen25-3b-instruct-kserve-workload-svc|g')
+oc patch configmap llama-stack-config -n dybbol --type=merge \
+  -p "{\"data\":{\"config.yaml\":$(echo "$FIXED" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')}}"
+```
+
+Verify:
+
+```bash
+oc get configmap llama-stack-config -n dybbol \
+  -o jsonpath='{.data.config\.yaml}' | grep base_url
+# Expected: base_url: https://qwen25-3b-instruct-kserve-workload-svc...
+```
+
+### 11.2 Fix VLLM_MAX_TOKENS
+
+The dashboard sets `VLLM_MAX_TOKENS=4096` equal to `--max-model-len=4096` on the vLLM server. vLLM adds `max_tokens` (output limit) to the input token count — the sum must not exceed `max_model_len`. With both at 4096, even a single input token causes HTTP 400 and an empty Playground response.
+
+Find the index of `VLLM_MAX_TOKENS` in the env array, then patch it:
+
+```bash
+# Find the index (0-based) — typically 3, but verify
+oc get llamastackdistribution lsd-genai-playground -n dybbol \
+  -o jsonpath='{range .spec.server.containerSpec.env[*]}{.name}{"\n"}{end}' | cat -n
+
+# Patch at the correct index (replace 3 if different)
+oc patch llamastackdistribution lsd-genai-playground -n dybbol \
+  --type=json \
+  -p '[{"op":"replace","path":"/spec/server/containerSpec/env/3/value","value":"1024"}]'
+```
+
+> **Note:** Patch the `LlamaStackDistribution` CR, not the Deployment — the operator overwrites Deployment changes on every reconcile.
+
+### 11.3 Restart the distribution
+
+```bash
+oc rollout restart deployment lsd-genai-playground -n dybbol
+oc rollout status deployment lsd-genai-playground -n dybbol
+# Expected: successfully rolled out
+```
+
+Once the pod is back, open **Gen AI Studio → Playground**, select the `dybbol` project, and send a message — the model should respond.
 
 ## 🤝 Contributing
 
