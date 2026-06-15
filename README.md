@@ -634,24 +634,68 @@ oc get maasmodelref qwen25-3b-instruct -n dybbol \
 # Expected: Ready / Ready: True — Successfully reconciled
 ```
 
-### 10.2 Complete the admin flow in the dashboard
+### 10.2 Create the MaaS Subscription and Authorization Policy
 
-Once the `MaaSModelRef` is Ready, the model appears in the MaaS admin forms:
+> **Important:** These two CRs must be created in the **`models-as-a-service` namespace** — the MaaS controller only watches that namespace. Creating them in `redhat-ods-applications` (the obvious wrong guess) leaves the PHASE column empty and they are never reconciled.
 
-1. **Settings → Subscriptions → Create subscription** — assign the model to one or more user groups and set a priority
-2. **Settings → Authorization policies → Create authorization policy** — select the model and the groups permitted to call it
-3. **Gen AI Studio → API keys → Create API key** — select the subscription, set expiration (1–365 days), copy the generated token
+`MaaSSubscription` grants a group of users access to a model with a token rate limit. `MaaSAuthPolicy` enforces that access through the Kuadrant gateway. Both CRDs are available at `maas.opendatahub.io/v1alpha1` — no dashboard clicking is required.
+
+```bash
+oc apply -f manifests/09/maas-subscription.yaml
+oc apply -f manifests/09/maas-auth-policy.yaml
+```
+
+Verify both reach `Active` phase (~10 seconds):
+
+```bash
+oc get maassubscription,maasauthpolicies -n models-as-a-service
+```
+
+Expected: both resources show `PHASE: Active`. The controller creates a Kuadrant `AuthPolicy` named `maas-auth-qwen25-3b-instruct` in the `dybbol` namespace automatically.
+
+> **Access control:** Both manifests use `system:authenticated` as the group, which allows any logged-in cluster user to obtain an API key and call the model. To restrict access to a specific group, change `spec.owner.groups[0].name` in `maas-subscription.yaml` and `spec.subjects.groups[0].name` in `maas-auth-policy.yaml` to your group name (e.g. `rhods-admins`).
 
 ### 10.3 Test the MaaS endpoint
 
+Once the Subscription and AuthPolicy are Active, the gateway is fully wired. Cluster-admin users can test immediately using their OpenShift token — no dashboard API key required for this step.
+
 ```bash
 APPS_DOMAIN=$(oc get ingresses.config cluster -o jsonpath='{.spec.domain}')
-curl -s \
-  -H "Authorization: Bearer <api-key>" \
+
+# List available models (top-level /v1/models path works)
+curl -sk \
+  -H "Authorization: Bearer $(oc whoami -t)" \
   https://maas.${APPS_DOMAIN}/v1/models | python3 -m json.tool
 ```
 
-Expected: a JSON list containing `Qwen/Qwen2.5-3B-Instruct`. Once working, use the same `maas.${APPS_DOMAIN}/v1/chat/completions` endpoint for inference calls.
+Expected: a JSON list containing `"id": "qwen25-3b-instruct"` with `"ready": true`.
+
+For chat completions, the path is **namespace-prefixed** (`/v1/chat/completions` alone returns 404):
+
+```bash
+curl -sk \
+  -H "Authorization: Bearer $(oc whoami -t)" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen25-3b-instruct","messages":[{"role":"user","content":"What is 2+2?"}],"max_tokens":64}' \
+  https://maas.${APPS_DOMAIN}/dybbol/qwen25-3b-instruct/v1/chat/completions | python3 -m json.tool
+```
+
+Expected: `HTTP 200` with a `choices[0].message.content` containing the model's answer.
+
+### 10.4 Generate a personal API key (optional)
+
+For per-user tokens that are not tied to the cluster-admin OpenShift token:
+
+1. **Gen AI Studio → API keys → Create API key** — set a name and expiration (1–365 days), copy the generated token
+2. Use the token as a Bearer header in any API call:
+
+```bash
+curl -sk \
+  -H "Authorization: Bearer <your-api-key>" \
+  https://maas.${APPS_DOMAIN}/dybbol/qwen25-3b-instruct/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen25-3b-instruct","messages":[{"role":"user","content":"Hello!"}],"max_tokens":64}' | python3 -m json.tool
+```
 
 ## 🤝 Contributing
 

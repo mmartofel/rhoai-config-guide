@@ -149,17 +149,29 @@ oc get dnsrecord maas-api-dns -n openshift-ingress-operator \
 # MaaSModelRef is the bridge between LLMInferenceService and the MaaS control plane.
 # Without it, Subscriptions and Authorization Policies cannot reference any model.
 oc apply -f manifests/09/maas-model-ref.yaml
-oc get maasmodelref qwen25-7b-instruct -n dybbol \
+oc get maasmodelref qwen25-3b-instruct -n dybbol \
   -o jsonpath='{.status.phase}'   # expect: Ready
 
-# After MaaSModelRef is Ready, complete the admin flow in the dashboard:
-#   Settings → Subscriptions → Create subscription (assign model to user groups)
-#   Settings → Authorization policies → Create authorization policy (enforce access)
-#   Gen AI Studio → API keys → Create API key (user generates a Bearer token)
-# Test the MaaS endpoint with the issued key:
+# 9f — Create Subscription and AuthPolicy declaratively (no dashboard clicking needed)
+# IMPORTANT: both CRs must go in the models-as-a-service namespace (not redhat-ods-applications).
+# The MaaS controller watches models-as-a-service for these resources.
+oc apply -f manifests/09/maas-subscription.yaml
+oc apply -f manifests/09/maas-auth-policy.yaml
+# Verify both reach Active phase (~10s)
+oc get maassubscription,maasauthpolicies -n models-as-a-service
+
+# 9g — Generate an API key in the dashboard (one-time per user):
+#   Gen AI Studio → API keys → Create API key → copy the Bearer token
+# OR test immediately using your OpenShift token (works for cluster-admin users):
 APPS_DOMAIN=$(oc get ingresses.config cluster -o jsonpath='{.spec.domain}')
-curl -H "Authorization: Bearer <api-key>" \
-  https://maas.${APPS_DOMAIN}/v1/models
+# List available models
+curl -sk -H "Authorization: Bearer $(oc whoami -t)" \
+  https://maas.${APPS_DOMAIN}/v1/models | jq .
+# Chat completions — note the namespace-prefixed path: /dybbol/qwen25-3b-instruct/v1/chat/completions
+curl -sk -H "Authorization: Bearer $(oc whoami -t)" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen25-3b-instruct","messages":[{"role":"user","content":"What is 2+2?"}],"max_tokens":64}' \
+  https://maas.${APPS_DOMAIN}/dybbol/qwen25-3b-instruct/v1/chat/completions | jq .
 ```
 
 The `scratch/` directory is gitignored and used for generated/temporary cluster artifacts.
@@ -177,7 +189,7 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 | `manifests/06/` | GPU `HardwareProfile` for RHOAI workloads (`gpu-profile` in `redhat-ods-applications`) |
 | `manifests/07/` | `dybbol` project namespace + `LLMInferenceService` examples: Qwen3-0.6B (HuggingFace) and Qwen2.5-7B-Instruct (Red Hat OCI) |
 | `manifests/08/` | Dashboard feature enablement: Gen AI Studio, additional UI flags, MLflow (operator + instance), and MaaS (gateway + DSC + UI flag) |
-| `manifests/09/` | MaaS infrastructure prerequisites: `maas-db-config` Secret, Authorino instance, optional User Workload Monitoring, DNS record template for maas gateway, `MaaSModelRef` to register the deployed model. PostgreSQL was moved to `manifests/04/`. |
+| `manifests/09/` | MaaS infrastructure prerequisites: `maas-db-config` Secret, Authorino instance, optional User Workload Monitoring, DNS record template for maas gateway, `MaaSModelRef` to register the deployed model, `MaaSSubscription` and `MaaSAuthPolicy` to expose the model for API key issuance. PostgreSQL was moved to `manifests/04/`. |
 | `manifests/mysql/` | Archived MySQL manifests (no longer in the main installation path; kept for reference) |
 
 ## Key Configuration Details
@@ -208,13 +220,14 @@ The `user.env` file is gitignored — copy `user.env.example` and fill in your t
 - **MaaS DNS routing** (`manifests/09/maas-dns-record.yaml`): The `maas-ui` sidecar inside the dashboard auto-discovers the MaaS API URL as `maas.<apps-domain>` (derived from `GATEWAY_DOMAIN` env var). On clusters where `*.apps` is a wildcard CNAME to the OpenShift Router, this URL resolves to the Router — not the `maas-default-gateway` ELB. The Router has no backend for this host and returns 503, causing the dashboard API keys panel to fail. Fix: create a specific `DNSRecord` (ingress.operator.openshift.io/v1) for `maas.<apps-domain>` as a CNAME to the `maas-default-gateway` ELB. This record overrides the wildcard in Route53 and is managed by the same ingress operator that manages the `*.apps` wildcard. The manifest in `manifests/09/maas-dns-record.yaml` is a template with `<APPS_DOMAIN>` and `<MAAS_ELB>` placeholders — use the dynamic command in Step 9d instead of applying the template directly.
 - **Kuadrant Authorino missing `tokenreviews` RBAC**: The Kuadrant operator deploys its own Authorino instance in `kuadrant-system` (SA: `kuadrant-system:authorino-authorino`) but does NOT grant it permission to call `tokenreviews.authentication.k8s.io`. The `openshift-identities` authentication in the MaaS `AuthPolicy` uses `kubernetesTokenReview` to validate OpenShift SA/OAuth tokens. Without this permission, every request through the MaaS gateway returns 401 with `"tokenreviews.authentication.k8s.io is forbidden"` in the Authorino denial log, and the dashboard API keys panel shows "Error loading components". The `authorino-manager-k8s-auth-role` ClusterRole already grants `create tokenreviews` — it just needs a separate ClusterRoleBinding for the Kuadrant SA: `oc create clusterrolebinding authorino-authorino-kuadrant-k8s-auth --clusterrole=authorino-manager-k8s-auth-role --serviceaccount=kuadrant-system:authorino-authorino`. Note: the existing `authorino-authorino-k8s-auth` binding targets `redhat-ods-applications:authorino-authorino` (the custom Authorino from Step 9), NOT the Kuadrant one.
 - **GPU sizing for LLMInferenceService**: The Tesla T4 has 15 GiB VRAM. Models up to ~6B parameters in BF16 (~6 GiB weights) fit comfortably with room for KV cache. 7B+ models in BF16 fill the T4 entirely — vLLM crashes during torch.compile autotuning because there is no headroom left after loading the weights. No `--gpu-memory-utilization` tuning can fix this. Use GPUs with ≥20 GiB VRAM (A100, H100) for 7B+ models. The rhelai1 OCI registry currently offers no modelcar images smaller than 7B; use `hf://` URIs for smaller models on T4 clusters.
+- **MaaS admin flow — declarative (Step 9f)**: `MaaSSubscription` and `MaaSAuthPolicy` CRDs (`maas.opendatahub.io/v1alpha1`) exist and must be created in the **`models-as-a-service` namespace** — the MaaS controller only watches that namespace. Putting them in `redhat-ods-applications` leaves PHASE empty (never reconciled). `spec.owner.groups` in `MaaSSubscription` and `spec.subjects.groups` in `MaaSAuthPolicy` accept OpenShift group names (`system:authenticated` for all logged-in users, or any specific group). The `MaaSAuthPolicy` controller generates a Kuadrant `AuthPolicy` named `maas-auth-<model>` in the model namespace (`dybbol`). Verify: `oc get maassubscription,maasauthpolicies -n models-as-a-service` → both PHASE `Active`. After this, `/v1/models` returns `200` and chat completions work at the namespace-prefixed path: `https://maas.<apps-domain>/<model-ns>/<model-name>/v1/chat/completions`. Users can generate personal API keys via Gen AI Studio → API keys; cluster admins can use `oc whoami -t` as a Bearer token directly.
 - **LlamaStack playground — vLLM endpoint scheme**: The RHOAI dashboard auto-generates the `llama-stack-config` ConfigMap with `http://` for the vLLM workload service URL (`<name>-kserve-workload-svc`). The llm-d workload service is TLS-only and requires `https://`. Fix: patch the `llama-stack-config` ConfigMap to replace `http://` with `https://` in `base_url`, then restart the `LlamaStackDistribution` deployment. The `VLLM_TLS_VERIFY=false` env var disables cert validation but does not fix the wrong scheme.
 - **LlamaStack playground — `VLLM_MAX_TOKENS` vs `max_model_len`**: The dashboard sets `VLLM_MAX_TOKENS=4096` and `--max-model-len=4096` to the same value. vLLM treats `max_tokens` as the maximum number of *output* tokens; it is added to the input token count and the sum must not exceed `max_model_len`. Setting both to 4096 leaves zero room for any input prompt — every request fails with HTTP 400. Fix: patch `VLLM_MAX_TOKENS` in `spec.server.containerSpec.env` on the `LlamaStackDistribution` CR to a value well below `max_model_len` (e.g. 1024 leaves 3072 tokens for conversation context). Patch via `oc patch llamastackdistribution <name> -n <ns> --type=json -p '[{"op":"replace","path":"/spec/server/containerSpec/env/<index>/value","value":"1024"}]'` — patching the Deployment directly is overwritten by the operator.
 
 ## Pending Work
 
-- [ ] **Test MaaS end-to-end** — create a Subscription and Authorization Policy via the dashboard, generate an API key, confirm `curl https://maas.<apps-domain>/v1/chat/completions` returns a valid response. Document any additional errors encountered.
-- [ ] **Declarative Subscription / Authorization Policy manifests** — the admin flow (Subscription → AuthPolicy) is currently dashboard-only. Investigate whether `MaaSSubscription` and `MaaSAuthorizationPolicy` CRDs exist (`oc get crd | grep maas`) and, if so, add manifests to `manifests/09/` so the full MaaS setup is reproducible without the UI.
+- [x] **Test MaaS end-to-end** — Subscription + AuthPolicy created declaratively; `curl /dybbol/qwen25-3b-instruct/v1/chat/completions` returns `200` with a valid response using `oc whoami -t` as Bearer token. Dashboard API keys page should now load correctly.
+- [x] **Declarative Subscription / Authorization Policy manifests** — `MaaSSubscription` and `MaaSAuthPolicy` CRDs confirmed present. Manifests added to `manifests/09/maas-subscription.yaml` and `manifests/09/maas-auth-policy.yaml`. **Critical**: both must be in `models-as-a-service` namespace (not `redhat-ods-applications`) — the MaaS controller only watches `models-as-a-service`.
 - [x] **`llm-inference.yaml` (HuggingFace / Qwen3-0.6B) namespace alignment** — decided: stays in `my-first-model` (inline in the manifest) as a standalone optional quick-start. `dybbol` is the primary MaaS-ready namespace for `llm-inference-qwen25-7b-instruct.yaml`.
 - [x] **HuggingFace example MaaS-readiness** — decided: out of scope. `llm-inference.yaml` is a community quick-start using the default `openshift-ai-inference` gateway; it is not intended for MaaS. Only `llm-inference-qwen25-7b-instruct.yaml` is MaaS-ready.
 
