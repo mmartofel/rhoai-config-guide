@@ -987,6 +987,88 @@ oc exec -n dybbol deployment/lsd-genai-playground -- \
 
 > **Access mode:** The server runs with `--access-mode=restricted`. The AI can query schema and run EXPLAIN plans but cannot execute any INSERT, UPDATE, DELETE, or DDL statements.
 
+## 13. Workbench Demo — YOLOv5 Object Detection
+
+***Workbenches are JupyterLab environments in RHOAI where data scientists write code, train models, and explore data. This section walks through a hands-on computer vision demo: transfer learning to build a custom object detector that recognises Bicycles, Cars, and Traffic Signs — entirely on the cluster GPU.***
+
+**Demo repository**: [`rh-aiservices-bu/yolov5-transfer-learning`](https://github.com/rh-aiservices-bu/yolov5-transfer-learning) — RHOAI-native, PyTorch-based, dataset auto-downloaded from Google Open Images, no prior data science knowledge needed to follow.
+
+### 13.1 Create the Workbench
+
+1. Open **RHOAI Dashboard → Projects → dybbol → Workbenches → Create workbench**
+2. Fill in:
+
+   | Field | Value |
+   |---|---|
+   | **Name** | `yolov5-demo` |
+   | **Image** | Jupyter \| PyTorch \| CUDA \| Python 3.12 (latest) |
+   | **Deployment size** | Small (2 CPU / 8 GiB RAM) |
+   | **Accelerator** | NVIDIA GPU — **1** |
+   | **Cluster storage** | Create new PVC `yolov5-demo` — **10 GiB** |
+
+3. Click **Create workbench** and wait until the status dot turns green (**Running**)
+4. Click **Open** → JupyterLab opens in a new tab
+
+> **`/dev/shm` note:** PyTorch's DataLoader uses shared memory when `num_workers > 0`. The default container SHM limit causes training crashes. This demo already uses `num_workers=0` so no extra setup is needed. For your own PyTorch projects that use multiple workers, work around it by editing the `Notebook` CR YAML in the OpenShift Console and adding an `emptyDir` volume with `medium: Memory` mounted at `/dev/shm`.
+
+### 13.2 Clone the demo repository
+
+In JupyterLab click **File → New → Terminal**, then:
+
+```bash
+git clone https://github.com/rh-aiservices-bu/yolov5-transfer-learning
+cd yolov5-transfer-learning
+```
+
+Verify CUDA is available before starting the notebooks:
+
+```python
+# Run in any notebook cell or the terminal's Python REPL
+import torch
+print(torch.cuda.is_available())      # Expected: True
+print(torch.cuda.get_device_name(0))  # Expected: Tesla T4 (or your cluster GPU)
+```
+
+### 13.3 Run the notebooks
+
+Open and run cells top-to-bottom in order.
+
+#### `01-data_preparation.ipynb` — ~5 min (download-bound)
+
+| Step | What happens |
+|---|---|
+| Library install | `openimages` + headless OpenCV |
+| Dataset download | 300 images/class (Bicycle, Car, Traffic sign) from Google Open Images |
+| Visualisation | Sample image rendered inline with **red bounding boxes** — the first "wow" moment |
+| Dataset formatting | Images reorganised into YOLO darknet format for training |
+
+#### `02-model_training.ipynb` — ~15–20 min on a T4 GPU
+
+| Step | What happens |
+|---|---|
+| YOLOv5 setup | Clones Ultralytics YOLOv5 + installs PyTorch dependencies |
+| Backbone freeze | Freezes the first 10 layers (backbone) — only the detection head is retrained |
+| Transfer learning | Trains for configurable epochs; loss curves printed per epoch |
+| Model saved | Weights written to `yolov5/runs/train/exp/weights/best.pt` |
+
+Transfer learning means the model starts from COCO-pretrained weights and adapts only the final detection layers to the three custom classes — far faster than training from scratch and a perfect illustration of the concept for any audience.
+
+### 13.4 Inspect results
+
+After training, run inference on a test image directly in the notebook:
+
+```python
+import torch
+model = torch.hub.load('yolov5/', 'custom',
+                       path='yolov5/runs/train/exp/weights/best.pt',
+                       source='local')
+results = model('download/car/images/<any-image>.jpg')
+results.show()   # Opens image with detection boxes in notebook output
+results.print()  # Prints class labels and confidence scores
+```
+
+The output is an annotated image with labelled bounding boxes — immediately understandable without any data science background.
+
 ## 🤝 Contributing
 
 Feel free to submit issues, pull requests, or suggest new features.
