@@ -848,6 +848,145 @@ oc exec -n dybbol deployment/lsd-genai-playground -- \
 
 > **Note:** Uploaded files and their vector embeddings are stored on ephemeral pod storage (`/opt/app-root/src/.llama/distributions/rh/`). Files are lost when the pod restarts. For durable RAG, a PVC or pgvector backend would be required (not configured here).
 
+## 12. MCP Tools in the Playground
+
+***MCP (Model Context Protocol) servers extend the Playground with external tools — web fetch, structured reasoning, real-time data, and more. The `rh-dev` LlamaStack distribution ships the `remote::model-context-protocol` provider pre-installed. MCP servers are registered via a single ConfigMap in `redhat-ods-applications`; the dashboard reads it and shows toggle switches in the Playground UI.***
+
+**Prerequisites** (already satisfied if you followed this guide):
+- `mcpCatalog: true` in `OdhDashboardConfig` (Step 8.2, `manifests/08/odh-dashboard-config-enable-features.yaml`)
+- `--enable-auto-tool-choice --tool-call-parser hermes` on vLLM (Step 9.2, `manifests/07/llm-inference-qwen25-3b-instruct.yaml`)
+
+### 12.1 Apply the MCP servers ConfigMap
+
+The ConfigMap `gen-ai-aa-mcp-servers` in `redhat-ods-applications` declares which MCP servers the Playground exposes. Each key is the tool display name; each value is a JSON object with the server's `url` (SSE or HTTP endpoint) and a `description` shown in the UI.
+
+```bash
+oc apply -f manifests/10/gen-ai-aa-mcp-servers.yaml
+```
+
+This registers three example servers:
+
+| Tool | Endpoint | API key required |
+|------|----------|-----------------|
+| **Fetch** | remote.mcpservers.org/fetch | No |
+| **Sequential-Thinking** | remote.mcpservers.org/sequentialthinking | No |
+| **Weather** | Apify weather actor | Yes (Apify token) |
+
+### 12.2 Restart the LlamaStack distribution
+
+The LlamaStack pod must restart to connect to the newly declared MCP servers.
+
+```bash
+oc rollout restart deployment lsd-genai-playground -n dybbol
+oc rollout status deployment lsd-genai-playground -n dybbol
+# Expected: successfully rolled out
+```
+
+### 12.3 Enable MCP tools in the Playground
+
+1. Open **Gen AI Studio → Playground**, select the `dybbol` project
+2. Click **Configure** (top-right)
+3. Find the **MCP** (or **Tools**) section — each registered server appears as a toggle
+4. Enable **Fetch** and/or **Sequential-Thinking** (no key needed)
+5. For **Weather**: enable the toggle, click **Configure**, enter your Apify API token
+6. Send a message that requires the tool, for example:
+   - *"Fetch https://example.com and summarize the content."*
+   - *"What is the weather in Prague right now?"*
+
+### 12.4 Verify via the LlamaStack API
+
+```bash
+oc exec -n dybbol deployment/lsd-genai-playground -- \
+  curl -s http://localhost:8321/v1/toolgroups | jq '.data[].identifier'
+# Expected output includes: "mcp::Fetch", "mcp::Sequential-Thinking", "mcp::Weather"
+```
+
+If a tool group is missing, the MCP server URL may be unreachable from the cluster or the pod has not yet restarted.
+
+### 12.5 Adding your own MCP server
+
+Any HTTP/SSE-based MCP server can be added — whether running in-cluster or on the public internet.
+
+```bash
+# Add a new tool to the existing ConfigMap
+oc patch configmap gen-ai-aa-mcp-servers -n redhat-ods-applications --type=merge -p '{
+  "data": {
+    "My-Tool": "{\"url\": \"http://my-mcp-server.my-namespace.svc.cluster.local/sse\", \"description\": \"Description of what this tool does.\"}"
+  }
+}'
+
+# Restart so LlamaStack connects to the new server
+oc rollout restart deployment lsd-genai-playground -n dybbol
+```
+
+For in-cluster servers, use the internal service DNS (`<service>.<namespace>.svc.cluster.local`). The `rh-ai-quickstart/llama-stack-mcp-server` repository contains a full example of deploying a custom Python MCP server on OpenShift AI alongside LlamaStack.
+
+### 12.6 (Optional) In-cluster PostgreSQL MCP server (pg-airman-mcp)
+
+***EnterpriseDB's `pg-airman-mcp` turns the existing in-cluster PostgreSQL (`maas-postgresql`) into an AI-accessible tool. It provides schema inspection, EXPLAIN query plans, index tuning recommendations, and database health checks — all in read-only mode so the AI cannot modify the shared infrastructure database.***
+
+This deploys a `pg-airman-mcp` pod in the `dybbol` namespace and registers it as the **Postgres-Airman** tool in the Playground. The server connects to the `maasdb` database that was deployed in Step 4.
+
+**Prerequisites**: Step 4 PostgreSQL must be running (`oc get pod -n redhat-ods-applications -l app=maas-postgresql`).
+
+#### Deploy pg-airman-mcp
+
+The Deployment references a Secret `pg-airman-mcp-db` that holds the PostgreSQL connection URL. Create it from the existing cluster credentials before applying the manifest (credentials are not stored in the committed YAML):
+
+```bash
+MAAS_PW=$(oc get secret maas-postgresql-credentials -n redhat-ods-applications \
+  -o jsonpath='{.data.POSTGRESQL_PASSWORD}' | base64 -d)
+oc create secret generic pg-airman-mcp-db -n dybbol \
+  --from-literal=AIRMAN_MCP_DATABASE_URL="postgresql://maas:${MAAS_PW}@maas-postgresql.redhat-ods-applications.svc.cluster.local:5432/maasdb?sslmode=disable"
+```
+
+Then apply the Deployment and Service:
+
+```bash
+oc apply -f manifests/10/pg-airman-mcp.yaml
+oc get pod -n dybbol -l app=pg-airman-mcp -w
+# Expected: 1/1 Running
+```
+
+> **OpenShift SCC note:** The image runs as UID 1000. OpenShift assigns a namespace-specific UID from the project's UID range. The image's venv files are world-readable (755/644), so the assigned UID can execute the server. If the pod enters `CrashLoopBackOff` with permission errors, add `runAsUser: 1000` to the Deployment's `securityContext` and ensure the namespace SCC permits specific UIDs (e.g., `anyuid` or a custom SCC).
+
+#### Register the tool with the Playground
+
+```bash
+# Add Postgres-Airman to the MCP server list and restart LlamaStack
+oc apply -f manifests/10/gen-ai-aa-mcp-servers.yaml
+oc rollout restart deployment lsd-genai-playground -n dybbol
+oc rollout status deployment lsd-genai-playground -n dybbol
+```
+
+#### Verify
+
+```bash
+# Streamable HTTP endpoint responds to POST (should return JSON, not 405)
+oc exec -n dybbol deployment/lsd-genai-playground -- \
+  curl -s -X POST http://pg-airman-mcp.dybbol.svc.cluster.local:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}},"id":1}'
+# Expected: JSON with serverInfo field (not HTTP 405)
+
+# Toolgroup registered with LlamaStack
+oc exec -n dybbol deployment/lsd-genai-playground -- \
+  curl -s http://localhost:8321/v1/toolgroups | jq '.data[].identifier'
+# Expected: includes "mcp::Postgres-Airman"
+```
+
+#### Use in the Playground
+
+1. Open **Gen AI Studio → Playground**, select the `dybbol` project
+2. Click **Configure** → enable the **Postgres-Airman** toggle
+3. An **"Authorize MCP server"** dialog appears asking for an Access token. Since `pg-airman-mcp` runs without OAuth configured, it accepts every connection without validating the Bearer token. Enter any non-empty placeholder (e.g. `none`) and click **Authorize**.
+4. Try these prompts:
+   - *"List all tables in the maasdb database and describe their purpose."*
+   - *"Show a database health summary — connections, buffer cache hit rate, vacuum status."*
+   - *"Are there any missing indexes I should add to improve query performance?"*
+
+> **Access mode:** The server runs with `--access-mode=restricted`. The AI can query schema and run EXPLAIN plans but cannot execute any INSERT, UPDATE, DELETE, or DDL statements.
+
 ## 🤝 Contributing
 
 Feel free to submit issues, pull requests, or suggest new features.
