@@ -774,6 +774,35 @@ oc rollout status deployment lsd-genai-playground -n dybbol
 
 Once the pod is back, open **Gen AI Studio → Playground**, select the `dybbol` project, and send a message — the model should respond.
 
+### 11.4 Use RAG (Knowledge feature)
+
+The `rh-dev` LlamaStack distribution ships fully RAG-ready — no additional setup is needed. The distribution already includes:
+- **Vector store**: `inline::milvus` (runs in the LlamaStack pod, no extra Kubernetes resources)
+- **Embeddings**: IBM Granite `granite-embedding-125m-english` via `inline::sentence-transformers`
+- **File ingestion**: `inline::file-search` tool runtime + `inline::localfs` file storage
+
+To use RAG in the Playground:
+
+1. Open **Gen AI Studio → Playground**, select the `dybbol` project
+2. Click **Configure → Knowledge**
+3. Toggle **RAG** to **On**
+4. Upload up to 10 PDF, CSV, or TXT files (max 10 MB each)
+5. Send a message — the model will search uploaded files before answering
+
+Verify the vector store and embedding model are registered:
+
+```bash
+oc exec -n dybbol deployment/lsd-genai-playground -- \
+  curl -s http://localhost:8321/v1/vector-stores | jq .
+# Expected: 200 (empty list is fine — stores are created on first file upload)
+
+oc exec -n dybbol deployment/lsd-genai-playground -- \
+  curl -s http://localhost:8321/v1/models | jq '.data[] | select(.model_type=="embedding")'
+# Expected: granite-embedding-125m-english entry
+```
+
+> **Note:** Uploaded files and their vector embeddings are stored on ephemeral pod storage (`/opt/app-root/src/.llama/distributions/rh/`). Files are lost when the pod restarts. For durable RAG, a PVC or pgvector backend would be required (not configured here).
+
 ## 🤝 Contributing
 
 Feel free to submit issues, pull requests, or suggest new features.
