@@ -30,7 +30,7 @@ spec:
     - name: main
       args:
         - --gpu-memory-utilization=0.85
-        - --max-model-len=4096
+        - --max-model-len=8192
         - --enforce-eager
         - --enable-auto-tool-choice
         - --tool-call-parser hermes

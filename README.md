@@ -776,14 +776,18 @@ Once the pod is back, open **Gen AI Studio → Playground**, select the `dybbol`
 
 ### 11.4 Use RAG (Knowledge feature)
 
-RAG requires **one prerequisite on the vLLM server**: the `--enable-auto-tool-choice` and `--tool-call-parser hermes` flags. When RAG is active, LlamaStack sends `tool_choice: "auto"` to vLLM so the model can invoke the `file_search` tool for retrieval. Without these flags vLLM returns HTTP 400 and the Playground shows no response.
+RAG requires **two prerequisites on the vLLM server**, both already included in `manifests/07/llm-inference-qwen25-3b-instruct.yaml`:
 
-These flags are already included in `manifests/07/llm-inference-qwen25-3b-instruct.yaml` (and the 7B variant). If you deployed from this repo they are in place. Verify:
+1. **`--enable-auto-tool-choice` and `--tool-call-parser hermes`** — LlamaStack sends `tool_choice: "auto"` to vLLM when invoking the `file_search` tool. Without these flags vLLM returns HTTP 400.
+
+2. **`--max-model-len=8192`** — RAG injects retrieved document chunks verbatim into the prompt. On a typical document query, input tokens (system prompt + tool definitions + chunks) easily reach 3000+. With `max_model_len=4096` and 1024 output tokens reserved, there is only 3072 tokens of input budget — one large chunk tips it over. 8192 provides 7168 tokens of input budget, which is sufficient for all realistic RAG workloads on the Qwen2.5-3B model. This is safe on a Tesla T4 (KV cache for 8192 tokens ≈ 1.1 GiB vs ~6.75 GiB available).
+
+Verify both are present in the running pod:
 
 ```bash
 oc get pod -n dybbol -l app=qwen25-3b-instruct \
   -o jsonpath='{.items[0].spec.containers[0].args}'
-# Expected output includes: --enable-auto-tool-choice  --tool-call-parser hermes
+# Expected output includes: --max-model-len=8192  --enable-auto-tool-choice  --tool-call-parser hermes
 ```
 
 The `rh-dev` LlamaStack distribution ships the rest fully RAG-ready — no further setup needed:
