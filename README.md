@@ -776,18 +776,42 @@ Once the pod is back, open **Gen AI Studio → Playground**, select the `dybbol`
 
 ### 11.4 Use RAG (Knowledge feature)
 
-RAG requires **two prerequisites on the vLLM server**, both already included in `manifests/07/llm-inference-qwen25-3b-instruct.yaml`:
+RAG requires **two vLLM server flags and one LlamaStack env var**, all configured in this repo:
+
+**vLLM flags** (in `manifests/07/llm-inference-qwen25-3b-instruct.yaml`):
 
 1. **`--enable-auto-tool-choice` and `--tool-call-parser hermes`** — LlamaStack sends `tool_choice: "auto"` to vLLM when invoking the `file_search` tool. Without these flags vLLM returns HTTP 400.
 
-2. **`--max-model-len=8192`** — RAG injects retrieved document chunks verbatim into the prompt. On a typical document query, input tokens (system prompt + tool definitions + chunks) easily reach 3000+. With `max_model_len=4096` and 1024 output tokens reserved, there is only 3072 tokens of input budget — one large chunk tips it over. 8192 provides 7168 tokens of input budget, which is sufficient for all realistic RAG workloads on the Qwen2.5-3B model. This is safe on a Tesla T4 (KV cache for 8192 tokens ≈ 1.1 GiB vs ~6.75 GiB available).
+2. **`--max-model-len=32768`** — RAG retrieves chunks from **all uploaded files simultaneously** and injects them verbatim into the prompt. With multiple files the total input easily reaches 7000+ tokens. `32768` is Qwen2.5-3B-Instruct's native context limit and covers the Playground's 10-file cap at typical document density:
 
-Verify both are present in the running pod:
+   | Metric | Value |
+   |--------|-------|
+   | T4 VRAM available for KV cache | ~6.75 GiB |
+   | KV cache for 32768 tokens | ~4.5 GiB ✓ |
+   | Input budget (32768 − 2048 output) | **30720 tokens** |
+   | ~600 tokens/chunk × 4 chunks/file | handles ~12 files |
+
+**LlamaStack env var** (runtime patch — no manifest):
+
+```bash
+# VLLM_MAX_TOKENS controls the output token budget sent to vLLM.
+# Increase from 1024 → 2048 to allow longer responses with the larger context window:
+oc patch llamastackdistribution lsd-genai-playground -n dybbol \
+  --type=json \
+  -p '[{"op":"replace","path":"/spec/server/containerSpec/env/3/value","value":"2048"}]'
+oc rollout restart deployment lsd-genai-playground -n dybbol
+```
+
+Verify all settings are live:
 
 ```bash
 oc get pod -n dybbol -l app=qwen25-3b-instruct \
   -o jsonpath='{.items[0].spec.containers[0].args}'
-# Expected output includes: --max-model-len=8192  --enable-auto-tool-choice  --tool-call-parser hermes
+# Expected: includes --max-model-len=32768  --enable-auto-tool-choice  --tool-call-parser hermes
+
+oc get llamastackdistribution lsd-genai-playground -n dybbol \
+  -o jsonpath='{range .spec.server.containerSpec.env[*]}{.name}={.value}{"\n"}{end}' | grep MAX_TOKENS
+# Expected: VLLM_MAX_TOKENS=2048
 ```
 
 The `rh-dev` LlamaStack distribution ships the rest fully RAG-ready — no further setup needed:
@@ -802,6 +826,13 @@ To use RAG in the Playground:
 3. Toggle **RAG** to **On**
 4. Upload up to 10 PDF, CSV, or TXT files (max 10 MB each)
 5. Send a message — the model will search uploaded files before answering
+
+**Tip — token-efficient RAG prompting:** A system prompt cannot reduce how many input tokens the retrieved chunks consume (retrieval happens before inference). It can, however, reduce output tokens and improve answer focus. Set this in **Configure → Prompt** before starting a RAG session:
+
+```
+You are a concise document assistant. Answer only from the retrieved document excerpts.
+Cite only the specific data requested. Do not repeat or paraphrase the full retrieved text.
+```
 
 Verify the vector store and embedding model are registered:
 
