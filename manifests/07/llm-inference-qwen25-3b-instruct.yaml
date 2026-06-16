@@ -32,6 +32,8 @@ spec:
         - --gpu-memory-utilization=0.85
         - --max-model-len=4096
         - --enforce-eager
+        - --enable-auto-tool-choice
+        - --tool-call-parser hermes
       resources:
         limits:
           cpu: "1"

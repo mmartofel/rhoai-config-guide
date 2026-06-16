@@ -776,7 +776,17 @@ Once the pod is back, open **Gen AI Studio → Playground**, select the `dybbol`
 
 ### 11.4 Use RAG (Knowledge feature)
 
-The `rh-dev` LlamaStack distribution ships fully RAG-ready — no additional setup is needed. The distribution already includes:
+RAG requires **one prerequisite on the vLLM server**: the `--enable-auto-tool-choice` and `--tool-call-parser hermes` flags. When RAG is active, LlamaStack sends `tool_choice: "auto"` to vLLM so the model can invoke the `file_search` tool for retrieval. Without these flags vLLM returns HTTP 400 and the Playground shows no response.
+
+These flags are already included in `manifests/07/llm-inference-qwen25-3b-instruct.yaml` (and the 7B variant). If you deployed from this repo they are in place. Verify:
+
+```bash
+oc get pod -n dybbol -l app=qwen25-3b-instruct \
+  -o jsonpath='{.items[0].spec.containers[0].args}'
+# Expected output includes: --enable-auto-tool-choice  --tool-call-parser hermes
+```
+
+The `rh-dev` LlamaStack distribution ships the rest fully RAG-ready — no further setup needed:
 - **Vector store**: `inline::milvus` (runs in the LlamaStack pod, no extra Kubernetes resources)
 - **Embeddings**: IBM Granite `granite-embedding-125m-english` via `inline::sentence-transformers`
 - **File ingestion**: `inline::file-search` tool runtime + `inline::localfs` file storage
