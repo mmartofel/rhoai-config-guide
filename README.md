@@ -762,6 +762,8 @@ oc get configmap llama-stack-config -n dybbol \
 
 The dashboard sets `VLLM_MAX_TOKENS=4096` equal to `--max-model-len=4096` on the vLLM server. vLLM adds `max_tokens` (output limit) to the input token count — the sum must not exceed `max_model_len`. With both at 4096, even a single input token causes HTTP 400 and an empty Playground response.
 
+The correct value is `2048`: the vLLM manifest already sets `--max-model-len=32768` (Qwen2.5-3B-Instruct's native limit), so 2048 output tokens leave 30720 tokens of input budget — enough for both normal chat and RAG with multiple uploaded files.
+
 Find the index of `VLLM_MAX_TOKENS` in the env array, then patch it:
 
 ```bash
@@ -772,7 +774,7 @@ oc get llamastackdistribution lsd-genai-playground -n dybbol \
 # Patch at the correct index (replace 3 if different)
 oc patch llamastackdistribution lsd-genai-playground -n dybbol \
   --type=json \
-  -p '[{"op":"replace","path":"/spec/server/containerSpec/env/3/value","value":"1024"}]'
+  -p '[{"op":"replace","path":"/spec/server/containerSpec/env/3/value","value":"2048"}]'
 ```
 
 Verify the value was updated:
@@ -780,14 +782,14 @@ Verify the value was updated:
 ```bash
 oc get llamastackdistribution lsd-genai-playground -n dybbol \
   -o jsonpath='{range .spec.server.containerSpec.env[*]}{.name}="{.value}"{"\n"}{end}' | grep MAX_TOKENS
-# Expected: VLLM_MAX_TOKENS="1024"
+# Expected: VLLM_MAX_TOKENS="2048"
 ```
 
 > **Note:** Patch the `LlamaStackDistribution` CR, not the Deployment — the operator overwrites Deployment changes on every reconcile.
 
 ### 11.3 Restart the distribution
 
-Both fixes above require a pod restart to take effect: the ConfigMap is read at startup only, and the LlamaStackDistribution operator propagates the updated `VLLM_MAX_TOKENS` env var on reconcile. Restart once to pick up both changes:
+Both fixes above require a pod restart to take effect: the ConfigMap is read at startup only, and the LlamaStackDistribution operator propagates the `VLLM_MAX_TOKENS=2048` change on reconcile. Restart once to pick up both changes:
 
 ```bash
 oc rollout restart deployment lsd-genai-playground -n dybbol
@@ -814,16 +816,7 @@ RAG requires **two vLLM server flags and one LlamaStack env var**, all configure
    | Input budget (32768 − 2048 output) | **30720 tokens** |
    | ~600 tokens/chunk × 4 chunks/file | handles ~12 files |
 
-**LlamaStack env var** (runtime patch — no manifest):
-
-```bash
-# VLLM_MAX_TOKENS controls the output token budget sent to vLLM.
-# Increase from 1024 → 2048 to allow longer responses with the larger context window:
-oc patch llamastackdistribution lsd-genai-playground -n dybbol \
-  --type=json \
-  -p '[{"op":"replace","path":"/spec/server/containerSpec/env/3/value","value":"2048"}]'
-oc rollout restart deployment lsd-genai-playground -n dybbol
-```
+**LlamaStack env var**: `VLLM_MAX_TOKENS=2048` was already set in 11.2 — no additional patch needed here.
 
 Verify all settings are live:
 
