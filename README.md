@@ -657,12 +657,13 @@ Expected: both resources show `PHASE: Active`. The controller creates a Kuadrant
 
 ### 10.3 Test the MaaS endpoint
 
-Once the Subscription and AuthPolicy are Active, the gateway is fully wired. Cluster-admin users can test immediately using their OpenShift token — no dashboard API key required for this step.
+Once the Subscription and AuthPolicy are Active, the gateway is fully wired.
+
+**Model listing** accepts your OpenShift token directly:
 
 ```bash
 APPS_DOMAIN=$(oc get ingresses.config cluster -o jsonpath='{.spec.domain}')
 
-# List available models (top-level /v1/models path works)
 curl -sk \
   -H "Authorization: Bearer $(oc whoami -t)" \
   "https://maas.${APPS_DOMAIN}/v1/models" | python3 -m json.tool
@@ -670,13 +671,23 @@ curl -sk \
 
 Expected: a JSON list containing `"id": "qwen25-3b-instruct"` with `"ready": true`.
 
-For chat completions, the path is **namespace-prefixed** (`/v1/chat/completions` alone returns 404):
+**Chat completions require a MaaS API key** — inference paths reject OpenShift tokens (the `MaaSAuthPolicy` restricts Kubernetes tokens to `/v1/models` only, so inference calls use rate-limited `sk-oai-*` keys). Create a short-lived CLI key using your OpenShift session, then use it:
 
 ```bash
 APPS_DOMAIN=$(oc get ingresses.config cluster -o jsonpath='{.spec.domain}')
 
-curl -sk \
+# Create a CLI API key (OpenShift token authenticates the creation request)
+API_KEY=$(curl -sk \
   -H "Authorization: Bearer $(oc whoami -t)" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"name":"cli-test","description":"CLI test key","subscriptions":[{"name":"qwen25-3b-instruct-subscription"}]}' \
+  "https://maas.${APPS_DOMAIN}/maas-api/v1/api-keys" | python3 -c "import sys,json;print(json.load(sys.stdin)['key'])")
+echo "API key: $API_KEY"
+
+# Chat completions — namespace-prefixed path, sk-oai-* key required
+curl -sk \
+  -H "Authorization: Bearer ${API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen25-3b-instruct","messages":[{"role":"user","content":"What is 2+2?"}],"max_tokens":64}' \
   "https://maas.${APPS_DOMAIN}/dybbol/qwen25-3b-instruct/v1/chat/completions" | python3 -m json.tool
@@ -686,30 +697,30 @@ Expected: `HTTP 200` with a `choices[0].message.content` containing the model's 
 
 ### 10.4 Authentication: when is an API key required?
 
-There are two ways to reach the model and they use different authentication paths:
+The MaaS gateway enforces path-based authentication — OpenShift tokens and MaaS API keys are accepted on different paths:
 
 | Access path | Auth required | Who uses it |
 |---|---|---|
 | **Gen AI Studio → Playground** | None — dashboard carries your OpenShift session | Anyone logged into the RHOAI dashboard |
-| **MaaS gateway (`maas.<domain>`)** with OpenShift token | OpenShift Bearer token (`oc whoami -t`) | CLI/scripts on a machine already logged into the cluster |
-| **MaaS gateway (`maas.<domain>`)** with API key | MaaS API key from Gen AI Studio → API keys | External apps, teammates, or scripts that have no OpenShift account |
+| **MaaS `/v1/models`** | OpenShift Bearer token (`oc whoami -t`) OR `sk-oai-*` API key | Quick CLI check on a logged-in machine |
+| **MaaS inference paths** (`/v1/chat/completions` etc.) | `sk-oai-*` MaaS API key only | All callers — OpenShift tokens are not accepted here |
 
 **Playground** routes directly to the LlamaStack distribution inside the cluster. No API key is ever needed — your OpenShift dashboard login is sufficient.
 
-**MaaS gateway** enforces Authorino authentication. Because the `MaaSAuthPolicy` grants `system:authenticated`, any valid OpenShift Bearer token is accepted — including `kubeadmin`'s. API keys are only needed when the caller has no OpenShift account (external apps, CI pipelines, shared access tokens).
+**MaaS gateway** uses the `MaaSAuthPolicy`-generated Kuadrant `AuthPolicy` which restricts the `kubernetes-tokens` auth method to paths matching `/v1/models` only. Inference calls (`/v1/chat/completions`, `/v1/completions`, etc.) require a `sk-oai-*` MaaS API key regardless of whether the caller has an OpenShift account.
 
-**OpenShift tokens expire** (typically 24 h); MaaS API keys last up to 365 days, making them more practical for long-running integrations.
+**OpenShift tokens expire** (typically 24 h); MaaS API keys last up to 365 days, making them more practical for persistent integrations.
 
-To generate a personal API key:
+To generate a personal API key from the dashboard:
 
 1. **Gen AI Studio → API keys → Create API key** — set a name and expiration (1–365 days), copy the generated token
-2. Use it as a Bearer header in any MaaS call:
+2. Use it as a Bearer header for inference calls:
 
 ```bash
 APPS_DOMAIN=$(oc get ingresses.config cluster -o jsonpath='{.spec.domain}')
 
 curl -sk \
-  -H "Authorization: Bearer <your-api-key>" \
+  -H "Authorization: Bearer <your-sk-oai-key>" \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen25-3b-instruct","messages":[{"role":"user","content":"Hello!"}],"max_tokens":64}' \
   "https://maas.${APPS_DOMAIN}/dybbol/qwen25-3b-instruct/v1/chat/completions" | python3 -m json.tool
