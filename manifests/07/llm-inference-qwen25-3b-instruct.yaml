@@ -28,6 +28,12 @@ spec:
   template:
     containers:
     - name: main
+      envFrom:
+        - secretRef:
+            name: huggingface-token
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
       args:
         - --gpu-memory-utilization=0.85
         - --max-model-len=32768
