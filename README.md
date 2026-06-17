@@ -923,8 +923,10 @@ If a tool group is missing, the MCP server URL may be unreachable from the clust
 
 Any HTTP/SSE-based MCP server can be added — whether running in-cluster or on the public internet.
 
+> **Replace the placeholders before running** — `My-Tool`, the `url`, and `description` below are illustrative only. Do not run this command as-is.
+
 ```bash
-# Add a new tool to the existing ConfigMap
+# Add a new tool to the existing ConfigMap (replace My-Tool, url, and description)
 oc patch configmap gen-ai-aa-mcp-servers -n redhat-ods-applications --type=merge -p '{
   "data": {
     "My-Tool": "{\"url\": \"http://my-mcp-server.my-namespace.svc.cluster.local/sse\", \"description\": \"Description of what this tool does.\"}"
