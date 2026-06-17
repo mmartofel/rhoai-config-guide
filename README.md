@@ -775,6 +775,14 @@ oc patch llamastackdistribution lsd-genai-playground -n dybbol \
   -p '[{"op":"replace","path":"/spec/server/containerSpec/env/3/value","value":"1024"}]'
 ```
 
+Verify the value was updated:
+
+```bash
+oc get llamastackdistribution lsd-genai-playground -n dybbol \
+  -o jsonpath='{range .spec.server.containerSpec.env[*]}{.name}="{.value}"{"\n"}{end}' | grep MAX_TOKENS
+# Expected: VLLM_MAX_TOKENS="1024"
+```
+
 > **Note:** Patch the `LlamaStackDistribution` CR, not the Deployment — the operator overwrites Deployment changes on every reconcile.
 
 ### 11.3 Restart the distribution
