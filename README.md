@@ -756,6 +756,8 @@ oc get configmap llama-stack-config -n dybbol \
 # Expected: base_url: https://qwen25-3b-instruct-kserve-workload-svc...
 ```
 
+> **The pod reads this file only at startup** — the change is not live until the restart in 11.3.
+
 ### 11.2 Fix VLLM_MAX_TOKENS
 
 The dashboard sets `VLLM_MAX_TOKENS=4096` equal to `--max-model-len=4096` on the vLLM server. vLLM adds `max_tokens` (output limit) to the input token count — the sum must not exceed `max_model_len`. With both at 4096, even a single input token causes HTTP 400 and an empty Playground response.
@@ -776,6 +778,8 @@ oc patch llamastackdistribution lsd-genai-playground -n dybbol \
 > **Note:** Patch the `LlamaStackDistribution` CR, not the Deployment — the operator overwrites Deployment changes on every reconcile.
 
 ### 11.3 Restart the distribution
+
+Both fixes above require a pod restart to take effect: the ConfigMap is read at startup only, and the LlamaStackDistribution operator propagates the updated `VLLM_MAX_TOKENS` env var on reconcile. Restart once to pick up both changes:
 
 ```bash
 oc rollout restart deployment lsd-genai-playground -n dybbol
